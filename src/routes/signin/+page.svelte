@@ -7,113 +7,90 @@
   let error = $state('');
   
   function goBack() {
-    if (window.history.length > 1) {
-      window.history.back();
-    } else {
-      goto('/app');
-    }
+    goto('/app');
   }
   
   async function handleSubmit(e) {
     e.preventDefault();
     error = '';
-    
-    if (!email || !password) {
-      error = 'Please fill in all fields';
-      return;
-    }
-    
+    if (!email || !password) { error = 'Please fill in all fields'; return; }
     loading = true;
-    
-    // Simulate API call - replace with actual auth
-    setTimeout(() => {
-      loading = false;
-      // On success: goto('/app');
-      // For now just show error demo:
-      // error = 'Invalid credentials';
-    }, 1500);
+    setTimeout(() => { loading = false; }, 1500);
   }
   
   function handleGoogleSignIn() {
-    // Implement Google OAuth here
-    console.log('Google sign in clicked');
+    console.log('Google sign in');
   }
 </script>
 
-<div class="grain"></div>
+<div class="fixed inset-0 z-[999] pointer-events-none opacity-[0.04]"
+  style="background-image:url(\"data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E\")">
+</div>
 
-<nav class="nav">
-  <a class="nav-logo" href="/" onclick={(e) => { e.preventDefault(); goBack(); }}>
-    <span class="nav-logo-mark">W</span>
-    <span class="nav-logo-text">atch</span>
-    <span class="nav-logo-accent">Order</span>
-    <div class="nav-logo-dot"></div>
+<nav class="fixed top-0 w-full z-[500] flex items-center px-[50px] py-4">
+  <a class="flex items-baseline gap-0 no-underline" href="/" onclick={(e) => { e.preventDefault(); goBack(); }}>
+    <span class="font-['Cormorant_Garamond'] text-[2.2rem] text-[#c9a84c] font-bold leading-none">W</span>
+    <span class="font-['Cormorant_Garamond'] text-[1.6rem] font-light text-[#f0ece4]">atch</span>
+    <span class="font-['Cormorant_Garamond'] italic text-[1.6rem] font-semibold opacity-85 text-[#f0ece4]">Order</span>
+    <div class="w-[5px] h-[5px] bg-[#c9a84c] rounded-full ml-[5px] shadow-[0_0_8px_#c9a84c]"></div>
   </a>
 </nav>
 
-<main class="auth-container">
-  <div class="auth-card">
-    <div class="auth-header">
-      <h1>Welcome Back</h1>
-      <p>Sign in to continue tracking your watch journey</p>
+<main class="min-h-screen flex items-center justify-center px-5 pt-[100px] pb-10 relative overflow-hidden bg-[#050505]">
+  <div class="absolute font-['Cormorant_Garamond'] text-[15vw] font-bold text-[rgba(201,168,76,0.03)] whitespace-nowrap pointer-events-none select-none z-[1] top-1/2 -translate-y-1/2">
+    WATCHORDER
+  </div>
+
+  <div class="bg-[#0a0a0a] border border-[rgba(201,168,76,0.2)] rounded-xl p-12 w-full max-w-[420px] relative z-10 shadow-[0_20px_60px_rgba(0,0,0,0.5)]">
+    <div class="text-center mb-8">
+      <h1 class="font-['Cormorant_Garamond'] text-[2.2rem] font-bold mb-2 text-[#f0ece4]">Welcome Back</h1>
+      <p class="text-[rgba(240,236,228,0.5)] text-[0.9rem]">Sign in to continue tracking your watch journey</p>
     </div>
-    
+
     {#if error}
-      <div class="error-banner">
+      <div class="bg-[rgba(231,76,60,0.1)] border border-[rgba(231,76,60,0.3)] text-[#e74c3c] px-4 py-3 rounded-md flex items-center gap-2.5 mb-6 font-['Space_Mono'] text-[0.75rem]">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="12" cy="12" r="10"/>
-          <line x1="12" y1="8" x2="12" y2="12"/>
-          <line x1="12" y1="16" x2="12.01" y2="16"/>
+          <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
         </svg>
         {error}
       </div>
     {/if}
-    
-    <form onsubmit={handleSubmit} class="auth-form">
-      <div class="input-group">
-        <label for="email">Email or Username</label>
-        <input 
-          type="text" 
-          id="email"
-          bind:value={email}
-          placeholder="Enter your email"
-          autocomplete="email"
-          disabled={loading}
-        />
+
+    <form onsubmit={handleSubmit} class="flex flex-col gap-5 mb-6">
+      <div class="flex flex-col gap-2 relative">
+        <label class="font-['Space_Mono'] text-[0.65rem] tracking-[0.1em] text-[rgba(240,236,228,0.6)] uppercase" for="email">Email or Username</label>
+        <input type="text" id="email" bind:value={email} placeholder="Enter your email" autocomplete="email" disabled={loading}
+          class="bg-[#111] border border-white/10 rounded-md px-4 py-3.5 text-[#f0ece4] font-['Sora'] text-[0.95rem] outline-none transition-all focus:border-[rgba(201,168,76,0.5)] focus:bg-[#141414] placeholder:text-[rgba(240,236,228,0.3)] disabled:opacity-60 disabled:cursor-not-allowed" />
       </div>
-      
-      <div class="input-group">
-        <label for="password">Password</label>
-        <input 
-          type="password" 
-          id="password"
-          bind:value={password}
-          placeholder="Enter your password"
-          autocomplete="current-password"
-          disabled={loading}
-        />
-        <a href="/forgot-password" class="forgot-link">Forgot password?</a>
+
+      <div class="flex flex-col gap-2 relative">
+        <label class="font-['Space_Mono'] text-[0.65rem] tracking-[0.1em] text-[rgba(240,236,228,0.6)] uppercase" for="password">Password</label>
+        <input type="password" id="password" bind:value={password} placeholder="Enter your password" autocomplete="current-password" disabled={loading}
+          class="bg-[#111] border border-white/10 rounded-md px-4 py-3.5 text-[#f0ece4] font-['Sora'] text-[0.95rem] outline-none transition-all focus:border-[rgba(201,168,76,0.5)] focus:bg-[#141414] placeholder:text-[rgba(240,236,228,0.3)] disabled:opacity-60" />
+        <a href="/forgot-password" class="absolute right-0 top-0 font-['Space_Mono'] text-[0.6rem] text-[#c9a84c] no-underline opacity-70 hover:opacity-100 transition-opacity">Forgot password?</a>
       </div>
-      
-      <button type="submit" class="submit-btn" disabled={loading}>
+
+      <button type="submit" disabled={loading}
+        class="flex items-center justify-center gap-2.5 w-full py-4 bg-gradient-to-br from-[rgba(201,168,76,0.25)] to-[rgba(201,168,76,0.1)] border border-[rgba(201,168,76,0.5)] rounded-lg text-[#c9a84c] font-['Space_Mono'] text-[0.75rem] tracking-[0.12em] cursor-pointer transition-all mt-2 hover:from-[rgba(201,168,76,0.35)] hover:to-[rgba(201,168,76,0.15)] hover:border-[#c9a84c] hover:-translate-y-px disabled:opacity-70 disabled:cursor-not-allowed">
         {#if loading}
-          <div class="spinner-sm"></div>
+          <div class="w-4 h-4 border-2 border-[rgba(201,168,76,0.2)] border-t-[#c9a84c] rounded-full animate-spin"></div>
           <span>SIGNING IN...</span>
         {:else}
           <span>SIGN IN</span>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <line x1="5" y1="12" x2="19" y2="12"/>
-            <polyline points="12 5 19 12 12 19"/>
+            <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
           </svg>
         {/if}
       </button>
     </form>
-    
-    <div class="divider">
-      <span>or continue with</span>
+
+    <div class="relative text-center mb-6">
+      <div class="absolute top-1/2 left-0 right-0 h-px bg-white/10"></div>
+      <span class="relative bg-[#0a0a0a] px-4 font-['Space_Mono'] text-[0.6rem] text-[rgba(240,236,228,0.4)] tracking-[0.1em]">or continue with</span>
     </div>
-    
-    <button class="google-btn" onclick={handleGoogleSignIn} disabled={loading}>
+
+    <button onclick={handleGoogleSignIn} disabled={loading}
+      class="flex items-center justify-center gap-3 w-full py-3.5 bg-transparent border border-white/15 rounded-lg text-[rgba(240,236,228,0.8)] font-['Space_Mono'] text-[0.75rem] cursor-pointer transition-all mb-6 hover:bg-white/5 hover:border-white/25 disabled:opacity-60 disabled:cursor-not-allowed">
       <svg width="18" height="18" viewBox="0 0 24 24">
         <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
         <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
@@ -122,360 +99,11 @@
       </svg>
       Sign in with Google
     </button>
-    
-    <div class="auth-footer">
-      <p>Don't have an account? <a href="/signup">Sign up</a></p>
+
+    <div class="text-center pt-6 border-t border-white/[0.06]">
+      <p class="text-[rgba(240,236,228,0.5)] text-[0.9rem]">
+        Don't have an account? <a href="/signup" class="text-[#c9a84c] no-underline font-semibold hover:opacity-80 transition-opacity">Create one</a>
+      </p>
     </div>
   </div>
-  
-  <div class="auth-background-text">WATCH ORDER</div>
 </main>
-
-<style>
-  :global(*) {
-    margin: 0;
-    padding: 0;
-    box-sizing: border-box;
-  }
-  
-  :global(body) {
-    background: #050505;
-    color: #f0ece4;
-    font-family: "Sora", sans-serif;
-    overflow-x: hidden;
-    min-height: 100vh;
-  }
-
-  .grain {
-    position: fixed;
-    inset: 0;
-    z-index: 999;
-    pointer-events: none;
-    opacity: 0.04;
-    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  }
-
-  .nav {
-    position: fixed;
-    top: 0;
-    width: 100%;
-    padding: 16px 50px;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    z-index: 500;
-    box-sizing: border-box;
-    background: rgba(5, 5, 5, 0.95);
-    backdrop-filter: blur(16px);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
-  }
-
-  .nav-logo {
-    display: flex;
-    align-items: baseline;
-    gap: 0;
-    text-decoration: none;
-    cursor: pointer;
-  }
-
-  .nav-logo-mark {
-    font-family: "Cormorant Garamond";
-    font-size: 2.2rem;
-    color: #c9a84c;
-    font-weight: 700;
-    line-height: 1;
-  }
-
-  .nav-logo-text {
-    font-family: "Cormorant Garamond";
-    font-size: 1.6rem;
-    font-weight: 300;
-    color: #f0ece4;
-  }
-
-  .nav-logo-accent {
-    font-family: "Cormorant Garamond";
-    font-style: italic;
-    font-size: 1.6rem;
-    font-weight: 600;
-    opacity: 0.85;
-    color: #f0ece4;
-  }
-
-  .nav-logo-dot {
-    width: 5px;
-    height: 5px;
-    background: #c9a84c;
-    border-radius: 50%;
-    margin-left: 5px;
-    box-shadow: 0 0 8px #c9a84c;
-  }
-
-  .auth-container {
-    min-height: 100vh;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 100px 20px 40px;
-    position: relative;
-    overflow: hidden;
-  }
-
-  .auth-card {
-    background: #0a0a0a;
-    border: 1px solid rgba(201, 168, 76, 0.2);
-    border-radius: 12px;
-    padding: 48px;
-    width: 100%;
-    max-width: 420px;
-    position: relative;
-    z-index: 10;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
-  }
-
-  .auth-header {
-    text-align: center;
-    margin-bottom: 32px;
-  }
-
-  .auth-header h1 {
-    font-family: "Cormorant Garamond";
-    font-size: 2.2rem;
-    font-weight: 700;
-    margin-bottom: 8px;
-    color: #f0ece4;
-  }
-
-  .auth-header p {
-    color: rgba(240, 236, 228, 0.5);
-    font-size: 0.9rem;
-  }
-
-  .error-banner {
-    background: rgba(231, 76, 60, 0.1);
-    border: 1px solid rgba(231, 76, 60, 0.3);
-    color: #e74c3c;
-    padding: 12px 16px;
-    border-radius: 6px;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin-bottom: 24px;
-    font-size: 0.85rem;
-    font-family: "Space Mono";
-    font-size: 0.75rem;
-  }
-
-  .auth-form {
-    display: flex;
-    flex-direction: column;
-    gap: 20px;
-    margin-bottom: 24px;
-  }
-
-  .input-group {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    position: relative;
-  }
-
-  .input-group label {
-    font-family: "Space Mono";
-    font-size: 0.65rem;
-    letter-spacing: 0.1em;
-    color: rgba(240, 236, 228, 0.6);
-    text-transform: uppercase;
-  }
-
-  .input-group input {
-    background: #111;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 6px;
-    padding: 14px 16px;
-    color: #f0ece4;
-    font-family: "Sora", sans-serif;
-    font-size: 0.95rem;
-    transition: all 0.2s;
-    outline: none;
-  }
-
-  .input-group input:focus {
-    border-color: rgba(201, 168, 76, 0.5);
-    background: #141414;
-  }
-
-  .input-group input::placeholder {
-    color: rgba(240, 236, 228, 0.3);
-  }
-
-  .input-group input:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-
-  .forgot-link {
-    position: absolute;
-    right: 0;
-    top: 0;
-    font-family: "Space Mono";
-    font-size: 0.6rem;
-    color: #c9a84c;
-    text-decoration: none;
-    opacity: 0.7;
-    transition: opacity 0.2s;
-  }
-
-  .forgot-link:hover {
-    opacity: 1;
-  }
-
-  .submit-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 10px;
-    width: 100%;
-    padding: 16px;
-    background: linear-gradient(135deg, rgba(201, 168, 76, 0.25), rgba(201, 168, 76, 0.1));
-    border: 1px solid rgba(201, 168, 76, 0.5);
-    border-radius: 8px;
-    color: #c9a84c;
-    font-family: "Space Mono";
-    font-size: 0.75rem;
-    letter-spacing: 0.12em;
-    cursor: pointer;
-    transition: all 0.25s ease;
-    margin-top: 8px;
-  }
-
-  .submit-btn:hover:not(:disabled) {
-    background: linear-gradient(135deg, rgba(201, 168, 76, 0.35), rgba(201, 168, 76, 0.15));
-    border-color: #c9a84c;
-    transform: translateY(-1px);
-  }
-
-  .submit-btn:disabled {
-    opacity: 0.7;
-    cursor: not-allowed;
-  }
-
-  @keyframes spin {
-    to { transform: rotate(360deg); }
-  }
-
-  .spinner-sm {
-    width: 16px;
-    height: 16px;
-    border: 2px solid rgba(201, 168, 76, 0.2);
-    border-top-color: #c9a84c;
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-  }
-
-  .divider {
-    position: relative;
-    text-align: center;
-    margin-bottom: 24px;
-  }
-
-  .divider::before {
-    content: "";
-    position: absolute;
-    top: 50%;
-    left: 0;
-    right: 0;
-    height: 1px;
-    background: rgba(255, 255, 255, 0.1);
-  }
-
-  .divider span {
-    position: relative;
-    background: #0a0a0a;
-    padding: 0 16px;
-    font-family: "Space Mono";
-    font-size: 0.6rem;
-    color: rgba(240, 236, 228, 0.4);
-    letter-spacing: 0.1em;
-  }
-
-  .google-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 12px;
-    width: 100%;
-    padding: 14px;
-    background: transparent;
-    border: 1px solid rgba(255, 255, 255, 0.15);
-    border-radius: 8px;
-    color: rgba(240, 236, 228, 0.8);
-    font-family: "Space Mono";
-    font-size: 0.75rem;
-    cursor: pointer;
-    transition: all 0.25s ease;
-    margin-bottom: 24px;
-  }
-
-  .google-btn:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.05);
-    border-color: rgba(255, 255, 255, 0.25);
-  }
-
-  .google-btn:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-
-  .auth-footer {
-    text-align: center;
-    padding-top: 24px;
-    border-top: 1px solid rgba(255, 255, 255, 0.06);
-  }
-
-  .auth-footer p {
-    color: rgba(240, 236, 228, 0.5);
-    font-size: 0.9rem;
-  }
-
-  .auth-footer a {
-    color: #c9a84c;
-    text-decoration: none;
-    font-weight: 600;
-    transition: opacity 0.2s;
-  }
-
-  .auth-footer a:hover {
-    opacity: 0.8;
-  }
-
-  .auth-background-text {
-    position: absolute;
-    font-family: "Cormorant Garamond";
-    font-size: 15vw;
-    font-weight: 700;
-    color: rgba(201, 168, 76, 0.03);
-    white-space: nowrap;
-    pointer-events: none;
-    user-select: none;
-    z-index: 1;
-  }
-
-  @media (max-width: 768px) {
-    .nav {
-      padding: 14px 20px;
-    }
-    
-    .auth-card {
-      padding: 32px 24px;
-    }
-    
-    .auth-header h1 {
-      font-size: 1.8rem;
-    }
-    
-    .auth-background-text {
-      font-size: 20vw;
-    }
-  }
-</style>
