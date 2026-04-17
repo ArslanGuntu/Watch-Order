@@ -1,1 +1,4 @@
-// place files you want to import through the `$lib` alias in this folder.
+// Re-export everything from $lib for convenience
+export * from './api/tmdb';
+export * from './utils/index';
+export * from './types/index';
