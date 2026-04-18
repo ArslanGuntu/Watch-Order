@@ -1,7 +1,7 @@
 <script>
-// @ts-nocheck
-
+  // @ts-nocheck
   import { onMount } from 'svelte';
+  import { goto } from '$app/navigation';
   
   const TMDB_KEY = '175b19b3ba717bf4f24e37ee4325be7e';
   const BASE = 'https://api.themoviedb.org/3';
@@ -22,9 +22,17 @@
   let selectedEpisode = $state(null);
   let showModal = $state(false);
   
-  // Track which seasons are expanded
-  let expandedSeasons = $state(new Set([1])); // Start with season 1 open
+  let expandedSeasons = $state(new Set([1]));
   
+  // Scroll lock effect
+  $effect(() => {
+    if (showModal) {
+      document.body.style.overflow = 'hidden';
+    } else {
+      document.body.style.overflow = '';
+    }
+  });
+
   function esc(s) {
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
@@ -70,12 +78,7 @@
   }
   
   function goBackToApp() {
-    sessionStorage.setItem('wo_from_guide', '1');
-    if (window.history.length > 1) {
-      window.history.back();
-    } else {
-      window.location.href = '/app';
-    }
+    goto('/app');
   }
   
   async function loadItem() {
@@ -112,10 +115,8 @@
       });
       guideSeasons = initialSeasons;
       
-      document.title = sel.title + ' · Episodes · WatchOrder';
       loading = false;
       
-      // Load first season
       const sns = Object.keys(guideSeasons).map(Number).sort((a, b) => a - b);
       if (sns.length > 0) {
         loadSeasonEps(sns[0]);
@@ -191,12 +192,10 @@
   function openEpModal(ep) {
     selectedEpisode = ep;
     showModal = true;
-    document.body.style.overflow = 'hidden';
   }
   
   function closeEpModal() {
     showModal = false;
-    document.body.style.overflow = '';
     setTimeout(() => {
       selectedEpisode = null;
     }, 250);
@@ -208,7 +207,6 @@
     }
   }
   
-  // Derived values
   let ac = $derived(sel?.type === 'anime' ? 'anime' : 'series');
   let acColor = $derived(ac === 'anime' ? '#e05c7a' : '#5fbf8c');
   let sortedSeasonNumbers = $derived(Object.keys(guideSeasons).map(Number).sort((a, b) => a - b));
@@ -227,11 +225,14 @@
     } else {
       loadItem();
     }
-    
-    window.addEventListener('keydown', handleKeydown);
-    return () => window.removeEventListener('keydown', handleKeydown);
   });
 </script>
+
+<svelte:head>
+  <title>{sel?.title ? `${sel.title} · Episodes · WatchOrder` : 'WatchOrder'}</title>
+</svelte:head>
+
+<svelte:window onkeydown={handleKeydown} />
 
 <div class="grain"></div>
 
@@ -377,7 +378,6 @@
           {/if}
         </div>
       {:else}
-        <!-- List View -->
         {#each sortedSeasonNumbers as sn, idx}
           {@const entry = guideEntries.find(e => e.season_number === sn)}
           {@const title = entry?.title || 'Season ' + sn}
@@ -453,7 +453,6 @@
   </main>
 {/if}
 
-<!-- Episode Modal -->
 {#if showModal && selectedEpisode}
   {@const ep = selectedEpisode}
   {@const rB = ep.ratingNum || boostR(ep.ratingRaw || 0)}
@@ -1061,7 +1060,6 @@
     opacity: 0.5;
   }
 
-  /* Series Graph Styles */
   .sg-wrapper {
     margin-top: 8px;
     overflow-x: auto;
@@ -1085,13 +1083,14 @@
     display: flex;
     margin: 0 auto;
   }
-.sg-axis-ep {
-  display: flex;
-  flex-direction: column;
-  flex-shrink: 0;
-  padding-top: 40px; /* 36px header + 4px gap to match season columns */
-  gap: 4px; /* match sg-season-col gap */
-}
+
+  .sg-axis-ep {
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+    padding-top: 40px;
+    gap: 4px;
+  }
 
   .sg-ep-label {
     height: 44px;
@@ -1212,7 +1211,6 @@
     flex-shrink: 0;
   }
 
-  /* Modal Styles */
   .modal-backdrop {
     position: fixed;
     inset: 0;

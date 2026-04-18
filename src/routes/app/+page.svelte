@@ -1,68 +1,105 @@
 <script>
   import { onMount } from 'svelte';
+  import { goto } from '$app/navigation';
   
   const TMDB_KEY = '175b19b3ba717bf4f24e37ee4325be7e';
   const BASE = 'https://api.themoviedb.org/3';
   const IMG = 'https://image.tmdb.org/t/p';
   const PAGE_SIZE = 24;
   
+  // State
   let activeFilter = $state('all');
   let page = $state(0);
   let searchQ = $state('');
   let allItems = $state([]);
   let filteredItems = $state([]);
+  let currentItems = $state([]);
   let loadState = $state({ franchises: false, movies: false, anime: false, series: false });
   let idSet = $state({ franchises: new Set(), movies: new Set(), anime: new Set(), series: new Set() });
   let colIdSet = $state(new Set());
   let partIdSet = $state(new Set());
+  let navScrolled = $state(false);
+  let isSearching = $state(false);
+  let searchError = $state('');
   
+  // Track which movies belong to which franchise
+  let franchiseMovies = $state(new Map()); // franchiseId -> Set of movieIds
+  
+  // Derived values
   let done = $derived(Object.values(loadState).every(Boolean));
-  let np = $derived(Math.max(1, Math.ceil(filteredItems.length / PAGE_SIZE)));
-  let start = $derived(page * PAGE_SIZE);
-  let pageItems = $derived(filteredItems.slice(start, start + PAGE_SIZE));
+  let totalFiltered = $derived(filteredItems.length);
+  let np = $derived(Math.max(1, Math.ceil(totalFiltered / PAGE_SIZE)));
   let hasPrev = $derived(page > 0);
-  let hasNext = $derived(filteredItems.length > start + PAGE_SIZE || !done);
+  let hasNext = $derived(totalFiltered > (page + 1) * PAGE_SIZE);
   
-  function esc(s) {
-    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-  }
+  $effect(() => {
+    const p = page;
+    const items = filteredItems;
+    const start = p * PAGE_SIZE;
+    const end = start + PAGE_SIZE;
+    currentItems = items.slice(start, end);
+  });
   
-  function norm(s) {
-    return s.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
-  }
+  // Helpers
+  const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   
-  function fuzzy(title, q) {
-    if (!q) return true;
-    const nt = norm(title), nq = norm(q);
+  const norm = (s) => s?.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim() || '';
+  
+  const matchesSearch = (title, desc, q) => {
+    if (!q || !title) return false;
+    const nt = norm(title);
+    const nd = norm(desc || '');
+    const nq = norm(q);
+    
     if (nt.includes(nq)) return true;
-    return nq.split(' ').filter(Boolean).every(w => nt.split(' ').some(tw => tw.includes(w)));
-  }
+    if (nd.includes(nq)) return true;
+    
+    const qWords = nq.split(' ').filter(Boolean);
+    const tWords = nt.split(' ');
+    if (qWords.length > 1 && qWords.every(w => tWords.some(tw => tw === w || tw.startsWith(w)))) return true;
+    
+    return false;
+  };
   
-  function applyFilter() {
-    const q = searchQ.trim();
-    filteredItems = allItems.filter(f => {
-      const tm = activeFilter === 'all' || f.type === activeFilter;
-      return tm && (!q || fuzzy(f.title, q));
-    });
-    page = 0;
-  }
-  
-  function getYearRange(parts) {
+  const getYearRange = (parts) => {
     const y = (parts || []).map(p => +(p.release_date || p.first_air_date || '').slice(0,4)).filter(Boolean).sort((a,b) => a-b);
     return y.length ? `${y[0]}–${y[y.length-1]}` : 'N/A';
-  }
+  };
   
-  function ingestItem(f) {
+  const applyFilter = () => {
+    const q = searchQ.trim();
+    if (!q) {
+      filteredItems = activeFilter === 'all' ? [...allItems] : allItems.filter(f => f.type === activeFilter);
+    } else {
+      filteredItems = allItems.filter(f => {
+        const typeMatch = activeFilter === 'all' || f.type === activeFilter;
+        return typeMatch && matchesSearch(f.title, f.desc, q);
+      });
+    }
+    page = 0;
+  };
+  
+  const ingestItem = (f) => {
+    if (allItems.some(item => item.id === f.id)) return;
     allItems = [...allItems, f];
     const q = searchQ.trim();
-    if ((activeFilter !== 'all' && f.type !== activeFilter) || (q && !fuzzy(f.title, q))) return;
+    if (q && !matchesSearch(f.title, f.desc, q)) return;
+    if (activeFilter !== 'all' && f.type !== activeFilter) return;
     filteredItems = [...filteredItems, f];
-  }
+  };
   
-  function addFranchise(c) {
+  const addFranchise = (c) => {
     if (!c.parts || c.parts.length < 2 || idSet.franchises.has(c.id)) return;
     idSet.franchises.add(c.id);
-    c.parts.forEach(p => partIdSet.add(p.id));
+    
+    // Track which movies belong to this franchise
+    const movieIds = new Set();
+    c.parts.forEach(p => {
+      partIdSet.add(p.id);
+      movieIds.add(p.id);
+    });
+    franchiseMovies.set(c.id, movieIds);
+    
     ingestItem({
       id: 'col_' + c.id, tmdbId: c.id, type: 'franchises',
       title: (c.name || '').replace(/ Collection$/i, ''),
@@ -73,14 +110,42 @@
       year: (c.parts[0]?.release_date || '').slice(0, 4),
       label: c.parts.length > 5 ? 'COMPLEX' : 'LINEAR',
       labelCls: c.parts.length > 5 ? 'lbl-blue' : 'lbl-green',
-      ratingNum: 0, rating: '—'
+      ratingNum: 0, rating: '—',
+      movieIds: Array.from(movieIds) // Store for reference
     });
-  }
+    
+    // Also add individual movies from this franchise
+    c.parts.forEach(p => addFranchiseMovie(p, c.id));
+  };
   
-  function addSingleMovie(m) {
-    if (!m?.id || idSet.movies.has(m.id) || partIdSet.has(m.id)) return;
+  // NEW: Add individual franchise movies as separate entries
+  const addFranchiseMovie = (m, franchiseId) => {
+    if (!m?.id || idSet.movies.has(m.id)) return;
     idSet.movies.add(m.id);
-    partIdSet.add(m.id);
+    
+    ingestItem({
+      id: m.id,
+      type: 'movies',
+      title: m.title || m.original_title || 'Unknown',
+      entries: 1,
+      desc: m.overview || '',
+      bg: m.backdrop_path ? IMG + '/w1280' + m.backdrop_path : '',
+      poster: m.poster_path ? IMG + '/w500' + m.poster_path : '',
+      years: m.release_date ? m.release_date.slice(0, 4) : 'N/A',
+      year: m.release_date ? m.release_date.slice(0, 4) : '',
+      label: 'FILM',
+      labelCls: 'lbl-movie',
+      ratingNum: m.vote_average || 0,
+      rating: m.vote_average ? m.vote_average.toFixed(1) : '—',
+      franchiseId: franchiseId, // Link back to franchise
+      isFranchiseMovie: true
+    });
+  };
+  
+  const addSingleMovie = (m) => {
+    if (!m?.id || idSet.movies.has(m.id)) return;
+    idSet.movies.add(m.id);
+    
     ingestItem({
       id: m.id, type: 'movies', title: m.title || m.original_title || 'Unknown',
       entries: 1, desc: m.overview || '',
@@ -92,9 +157,9 @@
       ratingNum: m.vote_average || 0,
       rating: m.vote_average ? m.vote_average.toFixed(1) : '—'
     });
-  }
+  };
   
-  function addTV(show, storeKey) {
+  const addTV = (show, storeKey) => {
     if (!show.id || idSet[storeKey].has(show.id)) return;
     idSet[storeKey].add(show.id);
     ingestItem({
@@ -110,16 +175,16 @@
       ratingNum: show.vote_average || 0,
       rating: show.vote_average ? show.vote_average.toFixed(1) : '—'
     });
-  }
+  };
   
-  async function fetchCollection(id) {
+  const fetchCollection = async (id) => {
     try {
       const r = await fetch(`${BASE}/collection/${id}?api_key=${TMDB_KEY}`);
       addFranchise(await r.json());
     } catch(e) {}
-  }
+  };
   
-  async function procMovies(ids) {
+  const procMovies = async (ids) => {
     const res = await Promise.allSettled(ids.map(id => fetch(`${BASE}/movie/${id}?api_key=${TMDB_KEY}`).then(r => r.json()).catch(() => null)));
     const newCols = [];
     res.forEach(r => {
@@ -127,27 +192,109 @@
       const m = r.value;
       if (m.belongs_to_collection?.id) {
         const cid = m.belongs_to_collection.id;
-        partIdSet.add(m.id);
         if (!colIdSet.has(cid)) {
           colIdSet.add(cid);
           newCols.push(cid);
         }
+        // Don't add to partIdSet here - let the franchise handle it
       } else {
         addSingleMovie(m);
       }
     });
     if (newCols.length) await Promise.all(newCols.map(id => fetchCollection(id)));
-  }
+  };
   
-  async function fetchTV(id, sk) {
+  const fetchTV = async (id, sk) => {
     try {
       const r = await fetch(`${BASE}/tv/${id}?api_key=${TMDB_KEY}`);
       const d = await r.json();
       if (d.number_of_seasons >= 1) addTV(d, sk);
     } catch(e) {}
-  }
+  };
   
-  async function discoverFranchises() {
+  const searchMedia = async (query, type = 'all') => {
+    const normalizedQuery = norm(query);
+    const queryWords = normalizedQuery.split(' ').filter(Boolean);
+    
+    try {
+      if (type === 'all' || type === 'movies') {
+        const movieRes = await fetch(`${BASE}/search/movie?api_key=${TMDB_KEY}&query=${encodeURIComponent(query)}&page=1`);
+        const movieData = await movieRes.json();
+        
+        if (movieData.results) {
+          const validResults = movieData.results.filter(m => {
+            const title = norm(m.title || '');
+            const origTitle = norm(m.original_title || '');
+            return queryWords.every(w => title.includes(w) || origTitle.includes(w));
+          });
+          
+          for (const m of validResults.slice(0, 10)) {
+            if (!idSet.movies.has(m.id)) {
+              const details = await fetch(`${BASE}/movie/${m.id}?api_key=${TMDB_KEY}`).then(r => r.json()).catch(() => null);
+              if (details?.id) {
+                if (details.belongs_to_collection?.id) {
+                  // Fetch the full collection to get all movies
+                  await fetchCollection(details.belongs_to_collection.id);
+                } else {
+                  addSingleMovie(details);
+                }
+              }
+            }
+          }
+        }
+      }
+      
+      if (type === 'all' || type === 'series' || type === 'anime') {
+        const tvRes = await fetch(`${BASE}/search/tv?api_key=${TMDB_KEY}&query=${encodeURIComponent(query)}&page=1`);
+        const tvData = await tvRes.json();
+        
+        if (tvData.results) {
+          const validResults = tvData.results.filter(show => {
+            const name = norm(show.name || '');
+            const origName = norm(show.original_name || '');
+            return queryWords.every(w => name.includes(w) || origName.includes(w));
+          });
+          
+          for (const show of validResults.slice(0, 10)) {
+            const isAnime = show.genre_ids?.includes(16) || norm(show.name).includes('anime');
+            const storeKey = isAnime ? 'anime' : 'series';
+            if (type === 'all' || type === storeKey) {
+              if (!idSet[storeKey].has(show.id)) {
+                const details = await fetch(`${BASE}/tv/${show.id}?api_key=${TMDB_KEY}`).then(r => r.json()).catch(() => null);
+                if (details?.id) addTV(details, storeKey);
+              }
+            }
+          }
+        }
+      }
+    } catch(e) {}
+  };
+  
+  const performSearch = async () => {
+    const q = searchQ.trim();
+    if (!q) {
+      applyFilter();
+      return;
+    }
+    
+    isSearching = true;
+    searchError = '';
+    
+    applyFilter();
+    
+    if (filteredItems.length === 0 && q.length > 1) {
+      await searchMedia(q, activeFilter);
+      applyFilter();
+      
+      if (filteredItems.length === 0) {
+        searchError = `No results found for "${q}"`;
+      }
+    }
+    
+    isSearching = false;
+  };
+  
+  const discoverFranchises = async () => {
     let tp = 200;
     try {
       const r = await fetch(`${BASE}/discover/movie?api_key=${TMDB_KEY}&sort_by=popularity.desc&page=1`);
@@ -180,9 +327,9 @@
       }
     }
     loadState = { ...loadState, franchises: true };
-  }
+  };
   
-  async function discoverMovies() {
+  const discoverMovies = async () => {
     for (const sort of ['popularity.desc', 'vote_average.desc&vote_count.gte=1000', 'revenue.desc']) {
       for (let p = 1; p <= 50; p++) {
         try {
@@ -199,7 +346,6 @@
               if (res.status !== 'fulfilled' || !res.value) return;
               const m = res.value;
               if (m.belongs_to_collection?.id) {
-                partIdSet.add(m.id);
                 const cid = m.belongs_to_collection.id;
                 if (!colIdSet.has(cid)) {
                   colIdSet.add(cid);
@@ -215,9 +361,9 @@
       }
     }
     loadState = { ...loadState, movies: true };
-  }
+  };
   
-  async function discoverAnime() {
+  const discoverAnime = async () => {
     for (const url of [
       `${BASE}/discover/tv?api_key=${TMDB_KEY}&with_genres=16&with_origin_country=JP&sort_by=popularity.desc`,
       `${BASE}/discover/tv?api_key=${TMDB_KEY}&with_keywords=210024&sort_by=popularity.desc`
@@ -234,9 +380,9 @@
       }
     }
     loadState = { ...loadState, anime: true };
-  }
+  };
   
-  async function discoverSeries() {
+  const discoverSeries = async () => {
     for (const sort of ['popularity.desc', 'vote_count.desc', 'first_air_date.desc']) {
       for (let p = 1; p <= 40; p++) {
         try {
@@ -250,71 +396,65 @@
       }
     }
     loadState = { ...loadState, series: true };
-  }
+  };
   
-  function goPage(p) {
+  const goPage = (p) => {
+    if (p < 0 || p >= np) return;
     page = p;
-    const heroEl = document.querySelector('.hero');
-    const y = heroEl ? heroEl.getBoundingClientRect().bottom + window.scrollY : 0;
-    window.scrollTo({ top: y, behavior: 'smooth' });
-  }
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
   
-  function goToGuide(href, event) {
+  const goToGuide = (href, event) => {
     event.preventDefault();
-    sessionStorage.setItem('wo_from_guide', '1');
-    window.location.href = href;
-  }
+    goto(href);
+  };
   
+  let searchTimeout;
   $effect(() => {
-    applyFilter();
+    const q = searchQ;
+    clearTimeout(searchTimeout);
+    searchTimeout = setTimeout(() => performSearch(), 400);
+    return () => clearTimeout(searchTimeout);
   });
   
   onMount(() => {
-    // Scroll handler for nav background
-    const handleScroll = () => {
-      const nav = document.getElementById('mainNav');
-      if (nav) nav.classList.toggle('nav-scrolled', window.scrollY > 50);
-    };
-    window.addEventListener('scroll', handleScroll, { passive: true });
-    
     discoverFranchises();
     discoverMovies();
     discoverAnime();
     discoverSeries();
-    
-    return () => window.removeEventListener('scroll', handleScroll);
   });
 </script>
 
+<svelte:window onscroll={() => navScrolled = window.scrollY > 50} />
+
 <div class="grain"></div>
-<nav class="nav" id="mainNav">
+<nav class="nav {navScrolled ? 'nav-scrolled' : ''}">
   <a class="nav-logo" href="/">
     <span class="nav-logo-mark">W</span><span class="nav-logo-text">atch</span><span class="nav-logo-accent">Order</span>
     <div class="nav-logo-dot"></div>
   </a>
   <div class="nav-right">
-    <div class="filter-bar" id="filterBar">
-      <button class="filter-btn {activeFilter === 'all' ? 'active' : ''}" onclick={() => activeFilter = 'all'}>
-        <span class="filter-dot all"></span>ALL
-      </button>
-      <button class="filter-btn {activeFilter === 'franchises' ? 'active' : ''}" onclick={() => activeFilter = 'franchises'}>
-        <span class="filter-dot franchises"></span>FRANCHISES
-      </button>
-      <button class="filter-btn {activeFilter === 'movies' ? 'active' : ''}" onclick={() => activeFilter = 'movies'}>
-        <span class="filter-dot movies"></span>MOVIES
-      </button>
-      <button class="filter-btn {activeFilter === 'anime' ? 'active' : ''}" onclick={() => activeFilter = 'anime'}>
-        <span class="filter-dot anime"></span>ANIME
-      </button>
-      <button class="filter-btn {activeFilter === 'series' ? 'active' : ''}" onclick={() => activeFilter = 'series'}>
-        <span class="filter-dot series"></span>SERIES
-      </button>
+    <div class="filter-bar">
+      {#each [['all', 'ALL'], ['franchises', 'FRANCHISES'], ['movies', 'MOVIES'], ['anime', 'ANIME'], ['series', 'SERIES']] as [type, label]}
+        <button class="filter-btn {activeFilter === type ? 'active' : ''}" onclick={() => { activeFilter = type; page = 0; applyFilter(); }}>
+          <span class="filter-dot {type}"></span>{label}
+        </button>
+      {/each}
     </div>
     <div class="search-wrapper">
       <span class="search-icon">⌕</span>
-      <input type="text" class="search-input" placeholder="Search..." bind:value={searchQ} autocomplete="off"/>
+      <input 
+        type="text" 
+        class="search-input" 
+        placeholder="Search titles..." 
+        bind:value={searchQ} 
+        autocomplete="off"
+      />
+      {#if isSearching}
+        <div class="search-spinner"></div>
+      {/if}
     </div>
-    <div class="debug-indicator" id="debugMsg">
+    <div class="debug-indicator">
       {done ? '✓' : '⚡'} 🎭{allItems.filter(x => x.type === 'franchises').length} 🎬{allItems.filter(x => x.type === 'movies').length} 🌸{allItems.filter(x => x.type === 'anime').length} 📺{allItems.filter(x => x.type === 'series').length}
     </div>
   </div>
@@ -328,7 +468,7 @@
           <div class="overtitle"><span class="bar"></span><span>COMPLETE DATABASE</span></div>
           <h1 class="title">The Entire<br/><em>Watch Universe</em></h1>
           <p class="subtitle">Every franchise, movie, anime, and series in one place.</p>
-          <div class="live-counter"><div class="live-dot"></div><span id="liveCount">{filteredItems.length} titles loaded</span></div>
+          <div class="live-counter"><div class="live-dot"></div><span>{totalFiltered} titles loaded</span></div>
         </div>
         <div class="hero-right">
           <a href="/recommendations" class="recommend-btn">
@@ -337,55 +477,65 @@
               <path d="M2 7h10M7 2l5 5-5 5" stroke="currentColor" stroke-width="1.5"/>
             </svg>
           </a>
-          <div style="font-family:'Space Mono';font-size:0.55rem;color:rgba(201,168,76,0.4);letter-spacing:0.1em;text-align:right">PERSONALISED PICKS</div>
+          <div class="text-[0.55rem] font-mono text-[rgba(201,168,76,0.4)] tracking-widest text-right">PERSONALISED PICKS</div>
         </div>
       </div>
     </header>
     <section>
-      {#if pageItems.length > 0}
-        <div class="franchise-grid page-transition" id="franchiseGrid">
-          {#each pageItems as f}
-            <a class="card {f.type === 'anime' ? 'anime-card' : f.type === 'series' ? 'series-card' : ''}" href="app/guide?type={f.type}&id={f.id}" onclick={(e) => goToGuide(`app/guide?type=${f.type}&id=${f.id}`, e)}>
-              <div class="card-media">
-                <img src={f.poster} alt={esc(f.title)} loading="lazy" onerror={(e) => e.target.style.display = 'none'} />
-                <div class="card-badge {f.type === 'movies' ? 'lbl-movie' : f.labelCls}">
-                  {f.type === 'anime' || f.type === 'series' ? (f.status || f.label) : (f.type === 'franchises' ? f.label : (f.ratingNum > 0 ? '★ ' + f.rating : f.label))}
-                </div>
-                {#if f.type === 'anime'}
-                  <div class="card-type-strip anime-strip"><span>⦿ ANIME</span><span>{f.label}</span></div>
-                {:else if f.type === 'series'}
-                  <div class="card-type-strip series-strip"><span>▶ SERIES</span><span>{f.label}</span></div>
-                {:else if f.type === 'franchises'}
-                  <div class="card-type-strip movies-strip"><span>🎬 SAGA</span><span>{f.label}</span></div>
-                {:else}
-                  <div class="card-type-strip movie-strip"><span>🎬 FILM</span><span>{f.years}</span></div>
-                {/if}
-              </div>
-              <div class="card-content">
-                <div class="card-meta {f.type === 'anime' ? 'anime-meta' : f.type === 'series' ? 'series-meta' : ''}">
-                  <span>{f.type === 'franchises' ? f.entries + ' FILMS' : (f.type === 'movies' ? 'FILM' : (f.entries > 1 ? f.entries + ' SEASONS' : '1 SEASON'))}</span>
-                  <span>{f.years}</span>
-                </div>
-                <h3 class="card-title">{f.title}</h3>
-                <p class="card-desc">{(f.desc || '').slice(0, 95)}{(f.desc || '').length >= 95 ? '...' : ''}</p>
-                <div class="card-btn">VIEW GUIDE <svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M2 7h10M7 2l5 5-5 5" stroke="currentColor" stroke-width="1.5"/></svg></div>
-              </div>
-            </a>
-          {/each}
+      {#if isSearching}
+        <div class="loading-more" style="padding:80px 0">
+          <div class="spinner-sm"></div>
+          <span>Searching for "{searchQ}"...</span>
         </div>
+      {:else if searchError}
+        <div class="no-results">
+          <div class="text-5xl opacity-20">⌕</div>
+          <span>{searchError}</span>
+          <button class="retry-btn" onclick={() => performSearch()}>Try Again</button>
+        </div>
+      {:else if currentItems.length > 0}
+        {#key page}
+          <div class="franchise-grid page-transition">
+            {#each currentItems as f (f.id)}
+              <a class="card {f.type === 'anime' ? 'anime-card' : f.type === 'series' ? 'series-card' : f.isFranchiseMovie ? 'franchise-movie-card' : ''}" 
+                 href="app/guide?type={f.type}&id={f.id}" 
+                 onclick={(e) => goToGuide(`app/guide?type=${f.type}&id=${f.id}`, e)}>
+                <div class="card-media">
+                  <img src={f.poster} alt={esc(f.title)} loading="lazy" onerror={(e) => e.target.style.display = 'none'} />
+                  <div class="card-badge {f.type === 'movies' ? 'lbl-movie' : f.labelCls}">
+                    {f.type === 'anime' || f.type === 'series' ? (f.status || f.label) : (f.type === 'franchises' ? f.label : (f.ratingNum > 0 ? '★ ' + f.rating : f.label))}
+                  </div>
+                  {#if f.type === 'anime'}
+                    <div class="card-type-strip anime-strip"><span>⦿ ANIME</span><span>{f.label}</span></div>
+                  {:else if f.type === 'series'}
+                    <div class="card-type-strip series-strip"><span>▶ SERIES</span><span>{f.label}</span></div>
+                  {:else if f.type === 'franchises'}
+                    <div class="card-type-strip movies-strip"><span>🎬 SAGA</span><span>{f.label}</span></div>
+                  {:else if f.isFranchiseMovie}
+                    <div class="card-type-strip franchise-movie-strip"><span>🎬 FRANCHISE</span><span>{f.years}</span></div>
+                  {:else}
+                    <div class="card-type-strip movie-strip"><span>🎬 FILM</span><span>{f.years}</span></div>
+                  {/if}
+                </div>
+                <div class="card-content">
+                  <div class="card-meta {f.type === 'anime' ? 'anime-meta' : f.type === 'series' ? 'series-meta' : f.isFranchiseMovie ? 'franchise-movie-meta' : ''}">
+                    <span>{f.type === 'franchises' ? f.entries + ' FILMS' : (f.type === 'movies' ? (f.isFranchiseMovie ? 'FRANCHISE FILM' : 'FILM') : (f.entries > 1 ? f.entries + ' SEASONS' : '1 SEASON'))}</span>
+                    <span>{f.years}</span>
+                  </div>
+                  <h3 class="card-title">{f.title}</h3>
+                  <p class="card-desc">{(f.desc || '').slice(0, 95)}{(f.desc || '').length >= 95 ? '...' : ''}</p>
+                  <div class="card-btn">VIEW GUIDE <svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M2 7h10M7 2l5 5-5 5" stroke="currentColor" stroke-width="1.5"/></svg></div>
+                </div>
+              </a>
+            {/each}
+          </div>
+        {/key}
       {:else if searchQ.trim()}
-        {#if !done}
-          <div class="loading-more" style="padding:80px 0">
-            <div class="spinner-sm"></div>
-            <span>Searching for "{searchQ}"...</span>
-          </div>
-        {:else}
-          <div class="no-results">
-            <div style="font-size:3rem;opacity:0.2">⌕</div>
-            <span>No results for "{searchQ}"</span>
-            <span style="font-size:0.7rem;opacity:0.5;margin-top:8px">Try searching with a different name</span>
-          </div>
-        {/if}
+        <div class="no-results">
+          <div class="text-5xl opacity-20">⌕</div>
+          <span>No results for "{searchQ}"</span>
+          <span class="text-[0.7rem] opacity-50 mt-2">Try a different search term</span>
+        </div>
       {:else}
         <div class="loading-more" style="padding:80px 0">
           <div class="spinner-sm"></div>
@@ -393,20 +543,20 @@
         </div>
       {/if}
       
-      {#if !done && pageItems.length === 0 && !searchQ.trim()}
-        <div class="loading-more" id="loadingMore">
+      {#if !done && currentItems.length === 0 && !searchQ.trim()}
+        <div class="loading-more">
           <div class="spinner-sm"></div>
           <span>Loading everything...</span>
         </div>
       {/if}
       
-      {#if pageItems.length > 0}
+      {#if totalFiltered > 0 && np > 1}
         <div class="pagination-bar">
-          <div class="pagination-info">Page <strong>{page + 1}</strong> of <strong>{np}</strong> · {filteredItems.length} total</div>
+          <div class="pagination-info">Page <strong>{page + 1}</strong> of <strong>{np}</strong> · {totalFiltered} total</div>
           <div class="pagination-dots">
             {#each Array(Math.min(np, 8)) as _, i}
               {@const pg = np <= 8 ? i : Math.round(i * (np - 1) / 7)}
-              <button class="pg-dot {pg === page ? 'active' : ''}" data-pg={pg} onclick={() => goPage(pg)}></button>
+              <button class="pg-dot {pg === page ? 'active' : ''}" onclick={() => goPage(pg)}></button>
             {/each}
           </div>
           <div class="pagination-btns">
@@ -517,6 +667,7 @@
     padding: 5px 14px;
     backdrop-filter: blur(8px);
     transition: 0.25s;
+    position: relative;
   }
 
   .search-wrapper:focus-within {
@@ -537,12 +688,22 @@
     font-family: "Space Mono";
     font-size: 0.78rem;
     padding: 8px 0;
-    width: 190px;
+    width: 220px;
     outline: none;
   }
 
   .search-input::placeholder {
     color: rgba(240, 236, 228, 0.35);
+  }
+
+  .search-spinner {
+    width: 16px;
+    height: 16px;
+    border: 1.5px solid rgba(201, 168, 76, 0.2);
+    border-top-color: #c9a84c;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin-left: 8px;
   }
 
   .debug-indicator {
@@ -894,6 +1055,10 @@
     border-color: #5fbf8c;
   }
 
+  .card.franchise-movie-card:hover {
+    border-color: #d4a84c;
+  }
+
   .card-media {
     position: relative;
     aspect-ratio: 2/3;
@@ -1009,6 +1174,11 @@
     color: #fde68a;
   }
 
+  .franchise-movie-strip {
+    background: rgba(180, 140, 40, 0.75);
+    color: #f9e08c;
+  }
+
   .card-content {
     padding: 24px 28px 28px;
   }
@@ -1028,6 +1198,10 @@
 
   .series-meta {
     color: #5fbf8c;
+  }
+
+  .franchise-movie-meta {
+    color: #d4a84c;
   }
 
   .card-title {
@@ -1073,6 +1247,11 @@
     border-bottom-color: #5fbf8c;
   }
 
+  .card.franchise-movie-card:hover .card-btn {
+    color: #d4a84c;
+    border-bottom-color: #d4a84c;
+  }
+
   .no-results {
     display: flex;
     flex-direction: column;
@@ -1084,6 +1263,24 @@
     font-family: "Space Mono";
     font-size: 0.72rem;
     letter-spacing: 0.12em;
+  }
+
+  .retry-btn {
+    margin-top: 16px;
+    padding: 8px 20px;
+    background: rgba(201, 168, 76, 0.1);
+    border: 1px solid rgba(201, 168, 76, 0.4);
+    color: #c9a84c;
+    font-family: "Space Mono";
+    font-size: 0.65rem;
+    cursor: pointer;
+    border-radius: 3px;
+    transition: all 0.2s;
+  }
+
+  .retry-btn:hover {
+    background: rgba(201, 168, 76, 0.2);
+    border-color: #c9a84c;
   }
 
   @media (max-width: 768px) {
@@ -1099,7 +1296,7 @@
       padding: 40px 0 0;
     }
     .search-input {
-      width: 110px;
+      width: 140px;
     }
     .filter-btn {
       padding: 6px 8px;

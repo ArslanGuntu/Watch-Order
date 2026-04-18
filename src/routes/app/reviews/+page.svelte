@@ -1,135 +1,133 @@
 <script>
-// @ts-nocheck
-
   import { onMount } from 'svelte';
-  
+
   const TMDB_KEY = '175b19b3ba717bf4f24e37ee4325be7e';
   const BASE = 'https://api.themoviedb.org/3';
   const IMG = 'https://image.tmdb.org/t/p/';
-  
+
   let itemType = $state('');
   let itemId = $state('');
   let qs = $state('');
-  
+
   let sel = $state(null);
   let loading = $state(true);
   let error = $state(null);
-  
-  // Empty arrays - no mock data
   let reviews = $state([]);
   let comments = $state([]);
-  
+
   let showAuthModal = $state(false);
-  let activeTab = $state('reviews'); // 'reviews' or 'comments'
-  
+  let activeTab = $state('reviews');
+
+  const ACCENT = {
+    anime: { color: '#e05c7a', pill: 'anime-pill', tab: 'anime-tab', hy: 'anime-hy' },
+    series: { color: '#5fbf8c', pill: 'series-pill', tab: 'series-tab', hy: 'series-hy' },
+    franchises: { color: '#c9a84c', pill: '', tab: '', hy: '' },
+    movies: { color: '#c9a84c', pill: '', tab: '', hy: '' }
+  };
+
+  let accent = $derived(sel ? ACCENT[sel.type] : ACCENT.movies);
+  let isTV = $derived(sel?.type === 'anime' || sel?.type === 'series');
+  let isFr = $derived(sel?.type === 'franchises');
+  let isSM = $derived(sel?.type === 'movies');
+
   function esc(s) {
-    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
   }
-  
+
   function fmtR(r) {
     return r > 0 ? r.toFixed(1) : '—';
   }
-  
-  function accentCol(t) {
-    return t === 'anime' ? '#e05c7a' : t === 'series' ? '#5fbf8c' : '#c9a84c';
-  }
-  
+
   function getYearRange(parts) {
-    const y = (parts || []).map(p => +(p.release_date || p.first_air_date || '').slice(0, 4)).filter(Boolean).sort((a, b) => a - b);
+    const y = (parts || [])
+      .map(p => +(p.release_date || p.first_air_date || '').slice(0, 4))
+      .filter(Boolean)
+      .sort((a, b) => a - b);
     return y.length ? `${y[0]}–${y[y.length - 1]}` : 'N/A';
   }
-  
+
   function goBackToApp() {
     sessionStorage.setItem('wo_from_guide', '1');
-    if (window.history.length > 1) {
-      window.history.back();
-    } else {
-      window.location.href = '/app';
-    }
+    window.location.href = '/app';
   }
-  
+
   function initials(n) {
     return n ? n.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase() : '??';
   }
-  
-  function openAuthModal() {
-    showAuthModal = true;
-    document.body.style.overflow = 'hidden';
+
+  function handleKeydown(e) {
+    if (e.key === 'Escape' && showAuthModal) showAuthModal = false;
   }
-  
-  function closeAuthModal() {
-    showAuthModal = false;
-    document.body.style.overflow = '';
+
+  async function loadFranchise() {
+    const colId = String(itemId).replace(/^col_/, '');
+    const col = await fetch(`${BASE}/collection/${colId}?api_key=${TMDB_KEY}`).then(r => r.json());
+    const parts = (col.parts || []).filter(p => p.release_date).sort((a, b) => a.release_date.localeCompare(b.release_date));
+
+    sel = {
+      id: itemId,
+      type: 'franchises',
+      title: (col.name || '').replace(/ Collection$/i, ''),
+      entries: parts.length,
+      desc: col.overview || '',
+      bg: col.backdrop_path ? `${IMG}w1280${col.backdrop_path}` : '',
+      poster: col.poster_path ? `${IMG}w500${col.poster_path}` : '',
+      years: getYearRange(parts),
+      ratingNum: 0,
+      rating: '—'
+    };
   }
-  
-  function goToSignIn() {
-    window.location.href = '/signin';
+
+  async function loadMovie() {
+    const m = await fetch(`${BASE}/movie/${itemId}?api_key=${TMDB_KEY}`).then(r => r.json());
+
+    sel = {
+      id: itemId,
+      type: 'movies',
+      title: m.title || m.original_title || 'Unknown',
+      entries: 1,
+      desc: m.overview || '',
+      bg: m.backdrop_path ? `${IMG}w1280${m.backdrop_path}` : '',
+      poster: m.poster_path ? `${IMG}w500${m.poster_path}` : '',
+      years: m.release_date ? m.release_date.slice(0, 4) : 'N/A',
+      ratingNum: m.vote_average || 0,
+      rating: fmtR(m.vote_average || 0)
+    };
   }
-  
-  function goToSignUp() {
-    window.location.href = '/signup';
+
+  async function loadTV() {
+    const sd = await fetch(`${BASE}/tv/${itemId}?api_key=${TMDB_KEY}`).then(r => r.json());
+    const seasons = (sd.seasons || []).filter(s => s.season_number > 0);
+
+    sel = {
+      id: +itemId,
+      type: itemType,
+      title: sd.name || sd.original_name || 'Unknown',
+      entries: seasons.length,
+      desc: sd.overview || '',
+      bg: sd.backdrop_path ? `${IMG}w1280${sd.backdrop_path}` : '',
+      poster: sd.poster_path ? `${IMG}w500${sd.poster_path}` : '',
+      posterUrl: sd.poster_path ? `${IMG}w300${sd.poster_path}` : '',
+      years: sd.first_air_date
+        ? sd.first_air_date.slice(0, 4) + (sd.last_air_date && sd.status !== 'Returning Series' ? `–${sd.last_air_date.slice(0, 4)}` : '–')
+        : 'N/A',
+      status: sd.status || '',
+      ratingNum: sd.vote_average || 0,
+      rating: fmtR(sd.vote_average || 0)
+    };
   }
-  
+
   async function loadItem() {
     try {
-      const isTV = itemType === 'anime' || itemType === 'series';
-      const isFr = itemType === 'franchises';
-      
-      if (isFr) {
-        const colId = String(itemId).replace(/^col_/, '');
-        const col = await fetch(`${BASE}/collection/${colId}?api_key=${TMDB_KEY}`).then(r => r.json());
-        const parts = (col.parts || []).filter(p => p.release_date).sort((a, b) => a.release_date.localeCompare(b.release_date));
-        
-        sel = {
-          id: itemId,
-          type: 'franchises',
-          title: (col.name || '').replace(/ Collection$/i, ''),
-          entries: parts.length,
-          desc: col.overview || '',
-          bg: col.backdrop_path ? `${IMG}w1280${col.backdrop_path}` : '',
-          poster: col.poster_path ? `${IMG}w500${col.poster_path}` : '',
-          years: getYearRange(parts),
-          ratingNum: 0,
-          rating: '—'
-        };
-        
-      } else if (itemType === 'movies') {
-        const m = await fetch(`${BASE}/movie/${itemId}?api_key=${TMDB_KEY}`).then(r => r.json());
-        
-        sel = {
-          id: itemId,
-          type: 'movies',
-          title: m.title || m.original_title || 'Unknown',
-          entries: 1,
-          desc: m.overview || '',
-          bg: m.backdrop_path ? `${IMG}w1280${m.backdrop_path}` : '',
-          poster: m.poster_path ? `${IMG}w500${m.poster_path}` : '',
-          years: m.release_date ? m.release_date.slice(0, 4) : 'N/A',
-          ratingNum: m.vote_average || 0,
-          rating: fmtR(m.vote_average || 0)
-        };
-        
-      } else if (isTV) {
-        const sd = await fetch(`${BASE}/tv/${itemId}?api_key=${TMDB_KEY}`).then(r => r.json());
-        const seasons = (sd.seasons || []).filter(s => s.season_number > 0);
-        
-        sel = {
-          id: +itemId,
-          type: itemType,
-          title: sd.name || sd.original_name || 'Unknown',
-          entries: seasons.length,
-          desc: sd.overview || '',
-          bg: sd.backdrop_path ? `${IMG}w1280${sd.backdrop_path}` : '',
-          poster: sd.poster_path ? `${IMG}w500${sd.poster_path}` : '',
-          posterUrl: sd.poster_path ? `${IMG}w300${sd.poster_path}` : '',
-          years: sd.first_air_date ? sd.first_air_date.slice(0, 4) + (sd.last_air_date && sd.status !== 'Returning Series' ? '–' + sd.last_air_date.slice(0, 4) : '–') : 'N/A',
-          status: sd.status || '',
-          ratingNum: sd.vote_average || 0,
-          rating: fmtR(sd.vote_average || 0)
-        };
-      }
-      
-      document.title = sel.title + ' · Reviews · WatchOrder';
+      if (itemType === 'franchises') await loadFranchise();
+      else if (itemType === 'movies') await loadMovie();
+      else if (itemType === 'anime' || itemType === 'series') await loadTV();
+
+      document.title = `${sel.title} · Reviews · WatchOrder`;
       loading = false;
     } catch (e) {
       console.error(e);
@@ -137,42 +135,28 @@
       loading = false;
     }
   }
-  
-  function handleKeydown(e) {
-    if (e.key === 'Escape' && showAuthModal) {
-      closeAuthModal();
-    }
-  }
-  
-  // Derived values
-  let ac = $derived(sel?.type === 'anime' ? 'anime' : sel?.type === 'series' ? 'series' : '');
-  let isTV = $derived(sel?.type === 'anime' || sel?.type === 'series');
-  let isFr = $derived(sel?.type === 'franchises');
-  let isSM = $derived(sel?.type === 'movies');
-  let acColor = $derived(accentCol(sel?.type));
-  
+
   onMount(() => {
     const url = new URL(window.location.href);
     itemType = url.searchParams.get('type') || '';
     itemId = url.searchParams.get('id') || '';
-    qs = '?type=' + encodeURIComponent(itemType) + '&id=' + encodeURIComponent(itemId);
-    
+    qs = `?type=${encodeURIComponent(itemType)}&id=${encodeURIComponent(itemId)}`;
+
     if (!itemType || !itemId) {
       error = 'No guide found.';
       loading = false;
     } else {
       loadItem();
     }
-    
-    window.addEventListener('keydown', handleKeydown);
-    return () => window.removeEventListener('keydown', handleKeydown);
   });
 </script>
+
+<svelte:window onkeydown={handleKeydown} />
 
 <div class="grain"></div>
 
 <nav class="nav">
-  <a class="nav-logo" href="/" onclick={(e) => { e.preventDefault(); goBackToApp(); }}>
+  <a class="nav-logo" href="/app" onclick={(e) => { e.preventDefault(); goBackToApp(); }}>
     <span class="nav-logo-mark">W</span>
     <span class="nav-logo-text">atch</span>
     <span class="nav-logo-accent">Order</span>
@@ -189,7 +173,7 @@
   <div class="error-page">
     <h2>404</h2>
     <p>{error}</p>
-    <button class="back-button" style="margin-top:20px" onclick={goBackToApp}>← BACK</button>
+    <button class="back-button mt-20" onclick={goBackToApp}>← BACK</button>
   </div>
 {:else if sel}
   <main class="guide-container">
@@ -201,34 +185,33 @@
           <span class="bar"></span>
           <span>REVIEWS & DISCUSSION</span>
         </div>
-        <h1 class="guide-title">{sel.title}</h1>
+        <h1 class="guide-title">{esc(sel.title)}</h1>
         <div class="guide-meta-row">
           {#if isTV}
-            <span class="guide-pill {ac}-pill">{sel.entries} SEASONS</span>
-            <span class="guide-pill">{sel.years || ''}</span>
-            <span class="guide-pill {ac}-pill">{sel.status || ''}</span>
+            <span class="guide-pill {accent.pill}">{sel.entries} SEASONS</span>
+            <span class="guide-pill">{sel.years}</span>
+            <span class="guide-pill {accent.pill}">{sel.status}</span>
           {:else if isSM}
             <span class="guide-pill">FILM</span>
-            <span class="guide-pill">{sel.years || ''}</span>
+            <span class="guide-pill">{sel.years}</span>
             {#if sel.ratingNum > 0}
               <span class="guide-pill">★ {sel.rating}</span>
             {/if}
           {:else}
             <span class="guide-pill">{sel.entries} FILMS</span>
-            <span class="guide-pill">{sel.years || ''}</span>
+            <span class="guide-pill">{sel.years}</span>
           {/if}
         </div>
       </div>
     </div>
-    
-    <!-- Tabs -->
+
     <div class="tab-bar">
       {#if isTV}
         <a class="tab-btn" href="guide{qs}">WATCH ORDER</a>
         <a class="tab-btn" href="episodes{qs}">EPISODES</a>
         <a class="tab-btn" href="history{qs}">HISTORY</a>
         <a class="tab-btn" href="ratings{qs}">RATINGS</a>
-        <a class="tab-btn tab-active {ac}-tab" href="reviews{qs}">REVIEWS</a>
+        <a class="tab-btn tab-active {accent.tab}" href="reviews{qs}">REVIEWS</a>
       {:else if isFr}
         <a class="tab-btn" href="guide{qs}">WATCH ORDER</a>
         <a class="tab-btn" href="history{qs}">HISTORY</a>
@@ -240,12 +223,14 @@
         <a class="tab-btn tab-active" href="reviews{qs}">REVIEWS</a>
       {/if}
     </div>
-    
+
     <div class="reviews-section">
-      <!-- Toggle between Reviews and Comments -->
       <div class="content-toggle">
-        <button 
-          class="toggle-btn {activeTab === 'reviews' ? 'active' : ''} {ac}"
+        <button
+          class="toggle-btn"
+          class:active={activeTab === 'reviews'}
+          class:accent-anime={activeTab === 'reviews' && sel.type === 'anime'}
+          class:accent-series={activeTab === 'reviews' && sel.type === 'series'}
           onclick={() => activeTab = 'reviews'}
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -253,8 +238,11 @@
           </svg>
           REVIEWS ({reviews.length})
         </button>
-        <button 
-          class="toggle-btn {activeTab === 'comments' ? 'active' : ''} {ac}"
+        <button
+          class="toggle-btn"
+          class:active={activeTab === 'comments'}
+          class:accent-anime={activeTab === 'comments' && sel.type === 'anime'}
+          class:accent-series={activeTab === 'comments' && sel.type === 'series'}
           onclick={() => activeTab = 'comments'}
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -266,11 +254,10 @@
           COMMENTS ({comments.length})
         </button>
       </div>
-      
-      <!-- Add Button -->
+
       <div class="add-section">
         {#if activeTab === 'reviews'}
-          <button class="add-btn {ac}" onclick={openAuthModal}>
+          <button class="add-btn {sel.type}" onclick={() => showAuthModal = true}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
             </svg>
@@ -278,7 +265,7 @@
           </button>
           <p class="helper-text">Share your thoughts and rate this {isTV ? 'series' : isFr ? 'franchise' : 'film'}</p>
         {:else}
-          <button class="add-btn {ac}" onclick={openAuthModal}>
+          <button class="add-btn {sel.type}" onclick={() => showAuthModal = true}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <line x1="12" y1="5" x2="12" y2="19"/>
               <line x1="5" y1="12" x2="19" y2="12"/>
@@ -288,8 +275,7 @@
           <p class="helper-text">Join the discussion and ask questions</p>
         {/if}
       </div>
-      
-      <!-- Content List -->
+
       <div class="content-list">
         {#if activeTab === 'reviews'}
           {#if reviews.length === 0}
@@ -307,7 +293,7 @@
               <div class="review-card">
                 <div class="review-header">
                   <div class="author-info">
-                    <div class="author-avatar {ac}">
+                    <div class="author-avatar {sel.type}">
                       {initials(review.author)}
                     </div>
                     <div class="author-meta">
@@ -315,7 +301,7 @@
                       <span class="review-date">{review.date}</span>
                     </div>
                   </div>
-                  <div class="review-rating" style="color: {acColor}">
+                  <div class="review-rating" style="color: {accent.color}">
                     ★ {review.rating.toFixed(1)}
                   </div>
                 </div>
@@ -356,7 +342,7 @@
               <div class="comment-card">
                 <div class="comment-header">
                   <div class="author-info">
-                    <div class="author-avatar {ac}">
+                    <div class="author-avatar {sel.type}">
                       {initials(comment.author)}
                     </div>
                     <div class="author-meta">
@@ -396,12 +382,14 @@
   </main>
 {/if}
 
-<!-- Auth Modal -->
 {#if showAuthModal}
-  <div class="modal-backdrop" class:closing={!showAuthModal} onclick={(e) => { if (e.target === e.currentTarget) closeAuthModal(); }}>
-    <div class="modal-panel" class:closing={!showAuthModal}>
-      <button class="modal-close" onclick={closeAuthModal}>✕</button>
-      
+  <div
+    class="modal-backdrop"
+    onclick={(e) => { if (e.target === e.currentTarget) showAuthModal = false; }}
+  >
+    <div class="modal-panel">
+      <button class="modal-close" onclick={() => showAuthModal = false}>✕</button>
+
       <div class="modal-header">
         <div class="modal-icon">
           <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -413,9 +401,9 @@
         <h2 class="modal-title">Sign In Required</h2>
         <p class="modal-subtitle">Please sign in or create an account to {activeTab === 'reviews' ? 'leave a review' : 'join the discussion'}</p>
       </div>
-      
+
       <div class="modal-actions">
-        <button class="auth-btn primary" onclick={goToSignIn}>
+        <button class="auth-btn primary" onclick={() => window.location.href = '/signin'}>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/>
             <polyline points="10,17 15,12 10,7"/>
@@ -423,8 +411,8 @@
           </svg>
           Sign In
         </button>
-        
-        <button class="auth-btn secondary" onclick={goToSignUp}>
+
+        <button class="auth-btn secondary" onclick={() => window.location.href = '/signup'}>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
             <circle cx="8.5" cy="7" r="4"/>
@@ -434,12 +422,12 @@
           Sign Up
         </button>
       </div>
-      
+
       <div class="divider">
         <span>or continue with</span>
       </div>
-      
-      <button class="google-btn" onclick={goToSignIn}>
+
+      <button class="google-btn" onclick={() => window.location.href = '/signin'}>
         <svg width="18" height="18" viewBox="0 0 24 24">
           <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
           <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
@@ -453,12 +441,12 @@
 {/if}
 
 <style>
-  :global(*) {
+  * {
     margin: 0;
     padding: 0;
     box-sizing: border-box;
   }
-  
+
   :global(body) {
     background: #050505;
     color: #f0ece4;
@@ -484,7 +472,6 @@
     justify-content: space-between;
     align-items: center;
     z-index: 500;
-    box-sizing: border-box;
     background: rgba(5, 5, 5, 0.95);
     backdrop-filter: blur(16px);
     border-bottom: 1px solid rgba(255, 255, 255, 0.07);
@@ -493,7 +480,6 @@
   .nav-logo {
     display: flex;
     align-items: baseline;
-    gap: 0;
     text-decoration: none;
   }
 
@@ -571,6 +557,10 @@
     opacity: 0.4;
   }
 
+  .mt-20 {
+    margin-top: 20px;
+  }
+
   .guide-container {
     padding-top: 80px;
   }
@@ -587,7 +577,7 @@
   .guide-hero-overlay {
     position: absolute;
     inset: 0;
-    background: linear-gradient(to bottom, rgba(5, 5, 5, 0.2) 0%, rgba(5, 5, 5, 0.7) 60%, rgba(5, 5, 5, 1) 100%);
+    background: linear-gradient(to bottom, rgba(5, 5, 5, 0.2) 0%, rgba(5, 5, 5, 0.7) 60%, #050505 100%);
   }
 
   .guide-hero-content {
@@ -622,12 +612,12 @@
     color: rgba(240, 236, 228, 0.65);
   }
 
-  .guide-pill.anime-pill {
+  .anime-pill {
     border-color: rgba(224, 92, 122, 0.4);
     color: #e05c7a;
   }
 
-  .guide-pill.series-pill {
+  .series-pill {
     border-color: rgba(95, 191, 140, 0.4);
     color: #5fbf8c;
   }
@@ -646,7 +636,6 @@
     cursor: pointer;
     transition: 0.25s;
     margin-bottom: 16px;
-    text-decoration: none;
     outline: none;
   }
 
@@ -703,18 +692,18 @@
   }
 
   .tab-active {
-    color: #c9a84c !important;
-    border-bottom-color: #c9a84c !important;
+    color: #c9a84c;
+    border-bottom-color: #c9a84c;
   }
 
-  .tab-active.anime-tab {
-    color: #e05c7a !important;
-    border-bottom-color: #e05c7a !important;
+  .anime-tab {
+    color: #e05c7a;
+    border-bottom-color: #e05c7a;
   }
 
-  .tab-active.series-tab {
-    color: #5fbf8c !important;
-    border-bottom-color: #5fbf8c !important;
+  .series-tab {
+    color: #5fbf8c;
+    border-bottom-color: #5fbf8c;
   }
 
   .reviews-section {
@@ -757,12 +746,12 @@
     background: rgba(201, 168, 76, 0.1);
   }
 
-  .toggle-btn.active.anime {
+  .toggle-btn.accent-anime {
     color: #e05c7a;
     background: rgba(224, 92, 122, 0.1);
   }
 
-  .toggle-btn.active.series {
+  .toggle-btn.accent-series {
     color: #5fbf8c;
     background: rgba(95, 191, 140, 0.1);
   }
@@ -835,7 +824,6 @@
     gap: 16px;
   }
 
-  /* Empty State Styles */
   .empty-state {
     display: flex;
     flex-direction: column;
@@ -844,9 +832,8 @@
     padding: 60px 20px;
     text-align: center;
     background: #0d0d0d;
-    border: 1px solid rgba(255, 255, 255, 0.06);
+    border: 1px dashed rgba(255, 255, 255, 0.06);
     border-radius: 8px;
-    border-style: dashed;
   }
 
   .empty-icon {
@@ -876,7 +863,8 @@
     max-width: 300px;
   }
 
-  .review-card, .comment-card {
+  .review-card,
+  .comment-card {
     background: #0d0d0d;
     border: 1px solid rgba(255, 255, 255, 0.06);
     border-radius: 6px;
@@ -884,11 +872,13 @@
     transition: border-color 0.2s;
   }
 
-  .review-card:hover, .comment-card:hover {
+  .review-card:hover,
+  .comment-card:hover {
     border-color: rgba(201, 168, 76, 0.2);
   }
 
-  .review-header, .comment-header {
+  .review-header,
+  .comment-header {
     display: flex;
     justify-content: space-between;
     align-items: flex-start;
@@ -941,7 +931,8 @@
     color: #f0ece4;
   }
 
-  .review-date, .comment-date {
+  .review-date,
+  .comment-date {
     font-family: "Space Mono";
     font-size: 0.55rem;
     color: rgba(240, 236, 228, 0.35);
@@ -953,14 +944,16 @@
     font-weight: 700;
   }
 
-  .review-content, .comment-content {
+  .review-content,
+  .comment-content {
     font-size: 0.95rem;
     line-height: 1.7;
     color: rgba(240, 236, 228, 0.75);
     margin-bottom: 20px;
   }
 
-  .review-actions, .comment-actions {
+  .review-actions,
+  .comment-actions {
     display: flex;
     gap: 16px;
     padding-top: 16px;
@@ -988,7 +981,7 @@
     background: rgba(201, 168, 76, 0.08);
   }
 
-  /* Modal Styles */
+  /* Modal */
   .modal-backdrop {
     position: fixed;
     inset: 0;
@@ -1007,15 +1000,6 @@
     to { opacity: 1; }
   }
 
-  .modal-backdrop.closing {
-    animation: backdropOut 0.25s ease forwards;
-  }
-
-  @keyframes backdropOut {
-    from { opacity: 1; }
-    to { opacity: 0; }
-  }
-
   .modal-panel {
     position: relative;
     width: 100%;
@@ -1027,18 +1011,9 @@
     animation: modalIn 0.35s cubic-bezier(0.16, 1, 0.3, 1);
   }
 
-  .modal-panel.closing {
-    animation: modalOut 0.25s ease forwards;
-  }
-
   @keyframes modalIn {
     from { opacity: 0; transform: scale(0.94) translateY(20px); }
     to { opacity: 1; transform: scale(1) translateY(0); }
-  }
-
-  @keyframes modalOut {
-    from { opacity: 1; transform: scale(1); }
-    to { opacity: 0; transform: scale(0.96); }
   }
 
   .modal-close {
@@ -1210,7 +1185,8 @@
     .add-section {
       padding: 24px;
     }
-    .review-card, .comment-card {
+    .review-card,
+    .comment-card {
       padding: 20px;
     }
     .modal-panel {

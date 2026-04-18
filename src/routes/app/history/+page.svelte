@@ -1,6 +1,4 @@
 <script>
-// @ts-nocheck
-
   import { onMount } from 'svelte';
   
   const TMDB_KEY = '175b19b3ba717bf4f24e37ee4325be7e';
@@ -17,8 +15,19 @@
   const itemId = params.get('id') || '';
   const QS = `?type=${encodeURIComponent(itemType)}&id=${encodeURIComponent(itemId)}`;
   
+  const ACCENT_COLORS = {
+    anime: '#e05c7a',
+    series: '#5fbf8c',
+    franchises: '#c9a84c',
+    movies: '#c9a84c'
+  };
+  
   function esc(s) {
-    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
   }
   
   function fmtR(r) {
@@ -26,85 +35,135 @@
   }
   
   function getYearRange(parts) {
-    const y = (parts || []).map(p => +(p.release_date || p.first_air_date || '').slice(0,4)).filter(Boolean).sort((a,b) => a-b);
-    return y.length ? `${y[0]}–${y[y.length-1]}` : 'N/A';
-  }
-  
-  function accentCol(t) {
-    return t === 'anime' ? '#e05c7a' : t === 'series' ? '#5fbf8c' : '#c9a84c';
+    const years = (parts || [])
+      .map(p => +(p.release_date || p.first_air_date || '').slice(0, 4))
+      .filter(Boolean)
+      .sort((a, b) => a - b);
+    return years.length ? `${years[0]}–${years[years.length - 1]}` : 'N/A';
   }
   
   function goBackToApp() {
     sessionStorage.setItem('wo_from_guide', '1');
-    if (window.history.length > 1) {
-      window.history.back();
-    } else {
-      window.location.href = '/app';
+    window.location.href = '/app';
+  }
+  
+  function groupByYear(entries) {
+    const grouped = {};
+    for (const entry of entries) {
+      const year = entry.year || '?';
+      if (!grouped[year]) grouped[year] = [];
+      grouped[year].push(entry);
     }
+    return Object.entries(grouped).sort((a, b) => +a[0] - +b[0]);
+  }
+  
+  async function loadFranchise() {
+    const colId = String(itemId).replace(/^col_/, '');
+    const col = await fetch(`${BASE}/collection/${colId}?api_key=${TMDB_KEY}`).then(r => r.json());
+    const parts = (col.parts || [])
+      .filter(p => p.release_date)
+      .sort((a, b) => a.release_date.localeCompare(b.release_date));
+    
+    sel = {
+      id: itemId,
+      type: 'franchises',
+      title: (col.name || '').replace(/ Collection$/i, ''),
+      entries: parts.length,
+      bg: col.backdrop_path ? `${IMG}/w1280${col.backdrop_path}` : '',
+      poster: col.poster_path ? `${IMG}/w500${col.poster_path}` : '',
+      years: getYearRange(parts)
+    };
+    
+    let details = await Promise.all(
+      parts.map(p => 
+        fetch(`${BASE}/movie/${p.id}?api_key=${TMDB_KEY}&append_to_response=credits`)
+          .then(r => r.json())
+          .catch(() => null)
+      )
+    );
+    
+    details = details
+      .filter(Boolean)
+      .sort((a, b) => (a.release_date || '').localeCompare(b.release_date || ''));
+    
+    guideEntries = details.map((m, i) => ({
+      ...m,
+      order: i + 1,
+      year: (m.release_date || '').slice(0, 4),
+      posterUrl: m.poster_path ? `${IMG}/w300${m.poster_path}` : '',
+      runtime: m.runtime ? `${Math.floor(m.runtime / 60)}h ${m.runtime % 60}m` : 'N/A',
+      rating: fmtR(m.vote_average || 0),
+      ratingNum: m.vote_average || 0,
+      director: (m.credits?.crew || []).find(c => c.job === 'Director')?.name || 'Unknown'
+    }));
+  }
+  
+  async function loadMovie() {
+    const m = await fetch(`${BASE}/movie/${itemId}?api_key=${TMDB_KEY}&append_to_response=credits`).then(r => r.json());
+    
+    sel = {
+      id: itemId,
+      type: 'movies',
+      title: m.title || m.original_title || 'Unknown',
+      entries: 1,
+      bg: m.backdrop_path ? `${IMG}/w1280${m.backdrop_path}` : '',
+      poster: m.poster_path ? `${IMG}/w500${m.poster_path}` : '',
+      years: m.release_date ? m.release_date.slice(0, 4) : 'N/A'
+    };
+    
+    guideEntries = [{
+      ...m,
+      order: 1,
+      year: (m.release_date || '').slice(0, 4),
+      posterUrl: m.poster_path ? `${IMG}/w300${m.poster_path}` : '',
+      runtime: m.runtime ? `${Math.floor(m.runtime / 60)}h ${m.runtime % 60}m` : 'N/A',
+      rating: fmtR(m.vote_average || 0),
+      ratingNum: m.vote_average || 0,
+      director: (m.credits?.crew || []).find(c => c.job === 'Director')?.name || 'Unknown'
+    }];
+  }
+  
+  async function loadTV() {
+    const sd = await fetch(`${BASE}/tv/${itemId}?api_key=${TMDB_KEY}&append_to_response=credits`).then(r => r.json());
+    const seasons = (sd.seasons || []).filter(s => s.season_number > 0);
+    
+    sel = {
+      id: +itemId,
+      type: itemType,
+      title: sd.name || sd.original_name || 'Unknown',
+      entries: seasons.length,
+      bg: sd.backdrop_path ? `${IMG}/w1280${sd.backdrop_path}` : '',
+      poster: sd.poster_path ? `${IMG}/w500${sd.poster_path}` : '',
+      years: sd.first_air_date 
+        ? sd.first_air_date.slice(0, 4) + (sd.last_air_date && sd.status !== 'Returning Series' ? `–${sd.last_air_date.slice(0, 4)}` : '–')
+        : 'N/A',
+      status: sd.status || ''
+    };
+    
+    guideEntries = seasons.map((s, i) => ({
+      ...s,
+      order: i + 1,
+      year: (s.air_date || '').slice(0, 4),
+      posterUrl: s.poster_path ? `${IMG}/w300${s.poster_path}` : (sd.poster_path ? `${IMG}/w300${sd.poster_path}` : ''),
+      title: s.name || `Season ${s.season_number}`,
+      overview: s.overview || sd.overview || '',
+      ratingNum: s.vote_average || 0,
+      rating: fmtR(s.vote_average || 0),
+      runtime: sd.episode_run_time?.[0] ? `~${sd.episode_run_time[0]}m/ep` : 'N/A',
+      episode_count: s.episode_count || 0,
+      director: (sd.credits?.crew || []).find(c => c.job === 'Director' || c.job === 'Executive Producer')?.name || 'Unknown'
+    }));
   }
   
   async function loadItem() {
     try {
-      const isTV = itemType === 'anime' || itemType === 'series';
-      const isFr = itemType === 'franchises';
-      
-      if (isFr) {
-        const colId = String(itemId).replace(/^col_/, '');
-        const col = await fetch(`${BASE}/collection/${colId}?api_key=${TMDB_KEY}`).then(r => r.json());
-        const parts = (col.parts || []).filter(p => p.release_date).sort((a,b) => a.release_date.localeCompare(b.release_date));
-        sel = {
-          id: itemId, type: 'franchises', title: (col.name || '').replace(/ Collection$/i, ''),
-          entries: parts.length, bg: col.backdrop_path ? `${IMG}/w1280${col.backdrop_path}` : '',
-          poster: col.poster_path ? `${IMG}/w500${col.poster_path}` : '', years: getYearRange(parts)
-        };
-        let dets = await Promise.all(parts.map(p => fetch(`${BASE}/movie/${p.id}?api_key=${TMDB_KEY}&append_to_response=credits`).then(r => r.json()).catch(() => null)));
-        dets = dets.filter(Boolean).sort((a,b) => (a.release_date || '').localeCompare(b.release_date || ''));
-        guideEntries = dets.map((m,i) => ({
-          ...m, order: i+1, year: (m.release_date || '').slice(0,4),
-          posterUrl: m.poster_path ? `${IMG}/w300${m.poster_path}` : '',
-          runtime: m.runtime ? `${Math.floor(m.runtime/60)}h ${m.runtime%60}m` : 'N/A',
-          rating: fmtR(m.vote_average || 0), ratingNum: m.vote_average || 0,
-          director: (m.credits?.crew || []).find(c => c.job === 'Director')?.name || 'Unknown'
-        }));
-      } else if (itemType === 'movies') {
-        const m = await fetch(`${BASE}/movie/${itemId}?api_key=${TMDB_KEY}&append_to_response=credits`).then(r => r.json());
-        sel = {
-          id: itemId, type: 'movies', title: m.title || m.original_title || 'Unknown',
-          entries: 1, bg: m.backdrop_path ? `${IMG}/w1280${m.backdrop_path}` : '',
-          poster: m.poster_path ? `${IMG}/w500${m.poster_path}` : '', years: m.release_date ? m.release_date.slice(0,4) : 'N/A'
-        };
-        guideEntries = [{
-          ...m, order: 1, year: (m.release_date || '').slice(0,4),
-          posterUrl: m.poster_path ? `${IMG}/w300${m.poster_path}` : '',
-          runtime: m.runtime ? `${Math.floor(m.runtime/60)}h ${m.runtime%60}m` : 'N/A',
-          rating: fmtR(m.vote_average || 0), ratingNum: m.vote_average || 0,
-          director: (m.credits?.crew || []).find(c => c.job === 'Director')?.name || 'Unknown'
-        }];
-      } else if (isTV) {
-        const sd = await fetch(`${BASE}/tv/${itemId}?api_key=${TMDB_KEY}&append_to_response=credits`).then(r => r.json());
-        const seasons = (sd.seasons || []).filter(s => s.season_number > 0);
-        sel = {
-          id: +itemId, type: itemType, title: sd.name || sd.original_name || 'Unknown',
-          entries: seasons.length, bg: sd.backdrop_path ? `${IMG}/w1280${sd.backdrop_path}` : '',
-          poster: sd.poster_path ? `${IMG}/w500${sd.poster_path}` : '',
-          years: sd.first_air_date ? sd.first_air_date.slice(0,4) + (sd.last_air_date && sd.status !== 'Returning Series' ? `–${sd.last_air_date.slice(0,4)}` : '–') : 'N/A',
-          status: sd.status || ''
-        };
-        guideEntries = seasons.map((s,i) => ({
-          ...s, order: i+1, year: (s.air_date || '').slice(0,4),
-          posterUrl: s.poster_path ? `${IMG}/w300${s.poster_path}` : (sd.poster_path ? `${IMG}/w300${sd.poster_path}` : ''),
-          title: s.name || `Season ${s.season_number}`,
-          overview: s.overview || sd.overview || '',
-          ratingNum: s.vote_average || 0, rating: fmtR(s.vote_average || 0),
-          runtime: sd.episode_run_time?.[0] ? `~${sd.episode_run_time[0]}m/ep` : 'N/A',
-          episode_count: s.episode_count || 0,
-          director: (sd.credits?.crew || []).find(c => c.job === 'Director' || c.job === 'Executive Producer')?.name || 'Unknown'
-        }));
-      }
+      if (itemType === 'franchises') await loadFranchise();
+      else if (itemType === 'movies') await loadMovie();
+      else if (itemType === 'anime' || itemType === 'series') await loadTV();
       
       document.title = `${sel.title} · History · WatchOrder`;
       loading = false;
-    } catch(e) {
+    } catch (e) {
       console.error(e);
       error = e.message;
       loading = false;
@@ -122,9 +181,12 @@
 </script>
 
 <div class="grain"></div>
+
 <nav class="nav">
   <a class="nav-logo" href="/">
-    <span class="nav-logo-mark">W</span><span class="nav-logo-text">atch</span><span class="nav-logo-accent">Order</span>
+    <span class="nav-logo-mark">W</span>
+    <span class="nav-logo-text">atch</span>
+    <span class="nav-logo-accent">Order</span>
     <div class="nav-logo-dot"></div>
   </a>
 </nav>
@@ -138,82 +200,65 @@
   <div class="error-page">
     <h2>404</h2>
     <p>{error}</p>
-    <button class="back-button" on:click={goBackToApp}>← BACK</button>
+    <button class="back-button" onclick={goBackToApp}>← BACK</button>
   </div>
 {:else if sel}
   {@const isTV = sel.type === 'anime' || sel.type === 'series'}
   {@const isFr = sel.type === 'franchises'}
-  {@const ac = sel.type === 'anime' ? 'anime' : sel.type === 'series' ? 'series' : ''}
-  {@const hyClass = ac ? `${ac}-hy` : ''}
-  {@const acC = accentCol(sel.type)}
-  {@const act = `tab-btn tab-active${ac ? ` ${ac}-tab` : ''}`}
-  {@const inact = 'tab-btn'}
-  
-  {@const byY = {}}
-  {#each guideEntries as m}
-    {@const y = m.year || '?'}
-    {#if !byY[y]} {@const _ = (byY[y] = [])} {/if}
-    {#if byY[y]} {byY[y].push(m)} {/if}
-  {/each}
+  {@const accentColor = ACCENT_COLORS[sel.type]}
+  {@const typeClass = isTV ? sel.type : ''}
   
   <main class="guide-container">
     <div class="guide-hero" style="background-image: url({sel.bg || sel.poster || ''})">
       <div class="guide-hero-overlay"></div>
       <div class="guide-hero-content">
-        <button class="back-button" on:click={goBackToApp}>← BACK</button>
-        <div class="overtitle"><span class="bar"></span><span>{isTV ? 'ANIME' : 'FRANCHISE'} · HISTORY</span></div>
+        <button class="back-button" onclick={goBackToApp}>← BACK</button>
+        <div class="overtitle">
+          <span class="bar"></span>
+          <span>{isTV ? 'ANIME' : 'FRANCHISE'} · HISTORY</span>
+        </div>
         <h1 class="guide-title">{esc(sel.title)}</h1>
         <div class="guide-meta-row">
-          {#if isTV}
-            <span class="guide-pill {ac ? `${ac}-pill` : ''}">{sel.entries} SEASONS</span>
-            <span class="guide-pill">{sel.years || ''}</span>
-          {:else}
-            <span class="guide-pill">{sel.entries} FILMS</span>
-            <span class="guide-pill">{sel.years || ''}</span>
-          {/if}
+          <span class="guide-pill {typeClass ? `${typeClass}-pill` : ''}">
+            {isTV ? `${sel.entries} SEASONS` : `${sel.entries} FILMS`}
+          </span>
+          <span class="guide-pill">{sel.years}</span>
         </div>
       </div>
     </div>
     
-    {#if isTV}
-      <div class="tab-bar">
-        <a class={inact} href={`guide${QS}`}>WATCH ORDER</a>
-        <a class={inact} href={`episodes${QS}`}>EPISODES</a>
-        <a class={act} href={`history${QS}`}>HISTORY</a>
-        <a class={inact} href={`ratings${QS}`}>RATINGS</a>
-        <a class={inact} href={`reviews${QS}`}>REVIEWS</a>
-      </div>
-    {:else}
-      <div class="tab-bar">
-        <a class={inact} href={`guide${QS}`}>WATCH ORDER</a>
-        <a class={act} href={`history${QS}`}>HISTORY</a>
-        <a class={inact} href={`ratings${QS}`}>RATINGS</a>
-        <a class={inact} href={`reviews${QS}`}>REVIEWS</a>
-      </div>
-    {/if}
+    <div class="tab-bar">
+      <a class="tab-btn" href={`guide${QS}`}>WATCH ORDER</a>
+      {#if isTV}
+        <a class="tab-btn" href={`episodes${QS}`}>EPISODES</a>
+      {/if}
+      <a class="tab-btn tab-active {typeClass ? `${typeClass}-tab` : ''}" href={`history${QS}`}>HISTORY</a>
+      <a class="tab-btn" href={`ratings${QS}`}>RATINGS</a>
+      <a class="tab-btn" href={`reviews${QS}`}>REVIEWS</a>
+    </div>
     
     <div class="history-section">
       <div class="timeline-intro">
-        <div class="overtitle {ac ? `${ac}-color` : ''}">
+        <div class="overtitle {typeClass ? `${typeClass}-color` : ''}">
           <span class="bar"></span>
           <span>{isTV ? 'AIRDATE HISTORY' : 'RELEASE HISTORY'}</span>
         </div>
         <p class="section-subtitle">Evolution across years.</p>
       </div>
       
-      {#each Object.entries(byY).sort((a,b) => +a[0] - +b[0]) as [year, items]}
-        <div class="history-year {hyClass}">{year}</div>
+      {#each groupByYear(guideEntries) as [year, items]}
+        <div class="history-year {typeClass ? `${typeClass}-hy` : ''}">{year}</div>
         {#each items as m}
           <div class="history-card">
-            <img src={m.posterUrl || ''} on:error={(e) => e.target.style.display = 'none'} loading="lazy" />
+            <img src={m.posterUrl || ''} onerror={(e) => e.target.style.display = 'none'} loading="lazy" alt="" />
             <div class="history-card-info">
-              <div style="font-family:'Space Mono';font-size:0.58rem;color:{acC};margin-bottom:4px">#{m.order}</div>
+              <div class="order-number" style="color: {accentColor}">#{m.order}</div>
               <h4 class="history-card-title">{esc(m.title || m.name || '')}</h4>
-              <div style="font-size:0.68rem;opacity:0.45;margin-top:4px">
-                {m.runtime || ''} · ★ {m.rating}{m.director ? ` · ${esc(m.director)}` : ''}
+              <div class="meta-line">
+                {m.runtime} · ★ {m.rating}{m.director ? ` · ${esc(m.director)}` : ''}
               </div>
-              <p style="font-size:0.76rem;opacity:0.4;margin-top:8px;line-height:1.5">
-                {esc((m.overview || '').slice(0,100))}{(m.overview || '').length > 100 ? '...' : ''}
+              <p class="overview">
+                {esc((m.overview || '').slice(0, 100))}{(m.overview || '').length > 100 ? '...' : ''}
               </p>
             </div>
           </div>
@@ -232,7 +277,7 @@
     box-sizing: border-box;
   }
   
-  body {
+  :global(body) {
     background: #050505;
     color: #f0ece4;
     font-family: "Sora", sans-serif;
@@ -257,7 +302,6 @@
     justify-content: space-between;
     align-items: center;
     z-index: 500;
-    box-sizing: border-box;
     background: rgba(5, 5, 5, 0.95);
     backdrop-filter: blur(16px);
     border-bottom: 1px solid rgba(255, 255, 255, 0.07);
@@ -266,7 +310,6 @@
   .nav-logo {
     display: flex;
     align-items: baseline;
-    gap: 0;
     text-decoration: none;
   }
 
@@ -395,12 +438,12 @@
     color: rgba(240, 236, 228, 0.65);
   }
 
-  .guide-pill.anime-pill {
+  .anime-pill {
     border-color: rgba(224, 92, 122, 0.4);
     color: #e05c7a;
   }
 
-  .guide-pill.series-pill {
+  .series-pill {
     border-color: rgba(95, 191, 140, 0.4);
     color: #5fbf8c;
   }
@@ -419,7 +462,6 @@
     cursor: pointer;
     transition: 0.25s;
     margin-bottom: 16px;
-    text-decoration: none;
     outline: none;
   }
 
@@ -443,6 +485,22 @@
     width: 36px;
     height: 1px;
     background: #c9a84c;
+  }
+
+  .anime-color {
+    color: #e05c7a;
+  }
+
+  .anime-color .bar {
+    background: #e05c7a;
+  }
+
+  .series-color {
+    color: #5fbf8c;
+  }
+
+  .series-color .bar {
+    background: #5fbf8c;
   }
 
   .tab-bar {
@@ -476,18 +534,18 @@
   }
 
   .tab-active {
-    color: #c9a84c !important;
-    border-bottom-color: #c9a84c !important;
+    color: #c9a84c;
+    border-bottom-color: #c9a84c;
   }
 
-  .tab-active.anime-tab {
-    color: #e05c7a !important;
-    border-bottom-color: #e05c7a !important;
+  .anime-tab {
+    color: #e05c7a;
+    border-bottom-color: #e05c7a;
   }
 
-  .tab-active.series-tab {
-    color: #5fbf8c !important;
-    border-bottom-color: #5fbf8c !important;
+  .series-tab {
+    color: #5fbf8c;
+    border-bottom-color: #5fbf8c;
   }
 
   .history-section {
@@ -529,11 +587,30 @@
     flex: 1;
   }
 
+  .order-number {
+    font-family: 'Space Mono';
+    font-size: 0.58rem;
+    margin-bottom: 4px;
+  }
+
   .history-card-title {
     font-family: "Cormorant Garamond";
     font-size: 1.2rem;
     font-weight: 600;
     margin-bottom: 6px;
+  }
+
+  .meta-line {
+    font-size: 0.68rem;
+    opacity: 0.45;
+    margin-top: 4px;
+  }
+
+  .overview {
+    font-size: 0.76rem;
+    opacity: 0.4;
+    margin-top: 8px;
+    line-height: 1.5;
   }
 
   .history-year {
@@ -545,11 +622,11 @@
   }
 
   .anime-hy {
-    color: rgba(224, 92, 122, 0.6) !important;
+    color: rgba(224, 92, 122, 0.6);
   }
 
   .series-hy {
-    color: rgba(95, 191, 140, 0.6) !important;
+    color: rgba(95, 191, 140, 0.6);
   }
 
   .span-bar {

@@ -1,5 +1,9 @@
 <script>
-  // Empty or remove script section entirely
+  // Empty
 </script>
 
 <slot />
+
+<style>
+  @import './layout.css';
+</style>
