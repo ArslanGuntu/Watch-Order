@@ -1,9 +1,5 @@
 <script>
-  // Empty
+  let { children } = $props();
 </script>
 
-<slot />
-
-<style>
-  @import './layout.css';
-</style>
+{@render children()}

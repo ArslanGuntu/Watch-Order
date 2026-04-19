@@ -1,12 +1,17 @@
 <script>
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
+  import { supabase } from '$lib/supabase';
   
   const TMDB_KEY = '175b19b3ba717bf4f24e37ee4325be7e';
   const BASE = 'https://api.themoviedb.org/3';
   const IMG = 'https://image.tmdb.org/t/p';
   const PAGE_SIZE = 24;
   
+  // User state
+  let user = $state(null);
+  let userMenuOpen = $state(false);
+
   // State
   let activeFilter = $state('all');
   let page = $state(0);
@@ -22,16 +27,28 @@
   let isSearching = $state(false);
   let searchError = $state('');
   
-  // Track which movies belong to which franchise
-  let franchiseMovies = $state(new Map()); // franchiseId -> Set of movieIds
+  let franchiseMovies = $state(new Map());
   
-  // Derived values
   let done = $derived(Object.values(loadState).every(Boolean));
   let totalFiltered = $derived(filteredItems.length);
   let np = $derived(Math.max(1, Math.ceil(totalFiltered / PAGE_SIZE)));
   let hasPrev = $derived(page > 0);
   let hasNext = $derived(totalFiltered > (page + 1) * PAGE_SIZE);
-  
+
+  // User display helpers
+  let userInitials = $derived(() => {
+    if (!user) return '?';
+    const name = user.user_metadata?.full_name || user.user_metadata?.name || user.email || '';
+    return name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase() || user.email?.[0]?.toUpperCase() || '?';
+  });
+  let userAvatar = $derived(user?.user_metadata?.avatar_url || user?.user_metadata?.picture || null);
+  let userName = $derived(
+    user?.user_metadata?.full_name ||
+    user?.user_metadata?.name ||
+    user?.email?.split('@')[0] ||
+    'User'
+  );
+
   $effect(() => {
     const p = page;
     const items = filteredItems;
@@ -40,24 +57,17 @@
     currentItems = items.slice(start, end);
   });
   
-  // Helpers
   const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-  
   const norm = (s) => s?.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim() || '';
   
   const matchesSearch = (title, desc, q) => {
     if (!q || !title) return false;
-    const nt = norm(title);
-    const nd = norm(desc || '');
-    const nq = norm(q);
-    
+    const nt = norm(title), nd = norm(desc || ''), nq = norm(q);
     if (nt.includes(nq)) return true;
     if (nd.includes(nq)) return true;
-    
     const qWords = nq.split(' ').filter(Boolean);
     const tWords = nt.split(' ');
     if (qWords.length > 1 && qWords.every(w => tWords.some(tw => tw === w || tw.startsWith(w)))) return true;
-    
     return false;
   };
   
@@ -91,61 +101,26 @@
   const addFranchise = (c) => {
     if (!c.parts || c.parts.length < 2 || idSet.franchises.has(c.id)) return;
     idSet.franchises.add(c.id);
-    
-    // Track which movies belong to this franchise
     const movieIds = new Set();
-    c.parts.forEach(p => {
-      partIdSet.add(p.id);
-      movieIds.add(p.id);
-    });
+    c.parts.forEach(p => { partIdSet.add(p.id); movieIds.add(p.id); });
     franchiseMovies.set(c.id, movieIds);
-    
     ingestItem({
       id: 'col_' + c.id, tmdbId: c.id, type: 'franchises',
       title: (c.name || '').replace(/ Collection$/i, ''),
       entries: c.parts.length, desc: c.overview || '',
       bg: c.backdrop_path ? IMG + '/w1280' + c.backdrop_path : '',
       poster: c.poster_path ? IMG + '/w500' + c.poster_path : '',
-      years: getYearRange(c.parts),
-      year: (c.parts[0]?.release_date || '').slice(0, 4),
+      years: getYearRange(c.parts), year: (c.parts[0]?.release_date || '').slice(0, 4),
       label: c.parts.length > 5 ? 'COMPLEX' : 'LINEAR',
       labelCls: c.parts.length > 5 ? 'lbl-blue' : 'lbl-green',
-      ratingNum: 0, rating: '—',
-      movieIds: Array.from(movieIds) // Store for reference
+      ratingNum: 0, rating: '—', movieIds: Array.from(movieIds)
     });
-    
-    // Also add individual movies from this franchise
     c.parts.forEach(p => addFranchiseMovie(p, c.id));
   };
   
-  // NEW: Add individual franchise movies as separate entries
   const addFranchiseMovie = (m, franchiseId) => {
     if (!m?.id || idSet.movies.has(m.id)) return;
     idSet.movies.add(m.id);
-    
-    ingestItem({
-      id: m.id,
-      type: 'movies',
-      title: m.title || m.original_title || 'Unknown',
-      entries: 1,
-      desc: m.overview || '',
-      bg: m.backdrop_path ? IMG + '/w1280' + m.backdrop_path : '',
-      poster: m.poster_path ? IMG + '/w500' + m.poster_path : '',
-      years: m.release_date ? m.release_date.slice(0, 4) : 'N/A',
-      year: m.release_date ? m.release_date.slice(0, 4) : '',
-      label: 'FILM',
-      labelCls: 'lbl-movie',
-      ratingNum: m.vote_average || 0,
-      rating: m.vote_average ? m.vote_average.toFixed(1) : '—',
-      franchiseId: franchiseId, // Link back to franchise
-      isFranchiseMovie: true
-    });
-  };
-  
-  const addSingleMovie = (m) => {
-    if (!m?.id || idSet.movies.has(m.id)) return;
-    idSet.movies.add(m.id);
-    
     ingestItem({
       id: m.id, type: 'movies', title: m.title || m.original_title || 'Unknown',
       entries: 1, desc: m.overview || '',
@@ -154,8 +129,23 @@
       years: m.release_date ? m.release_date.slice(0, 4) : 'N/A',
       year: m.release_date ? m.release_date.slice(0, 4) : '',
       label: 'FILM', labelCls: 'lbl-movie',
-      ratingNum: m.vote_average || 0,
-      rating: m.vote_average ? m.vote_average.toFixed(1) : '—'
+      ratingNum: m.vote_average || 0, rating: m.vote_average ? m.vote_average.toFixed(1) : '—',
+      franchiseId, isFranchiseMovie: true
+    });
+  };
+  
+  const addSingleMovie = (m) => {
+    if (!m?.id || idSet.movies.has(m.id)) return;
+    idSet.movies.add(m.id);
+    ingestItem({
+      id: m.id, type: 'movies', title: m.title || m.original_title || 'Unknown',
+      entries: 1, desc: m.overview || '',
+      bg: m.backdrop_path ? IMG + '/w1280' + m.backdrop_path : '',
+      poster: m.poster_path ? IMG + '/w500' + m.poster_path : '',
+      years: m.release_date ? m.release_date.slice(0, 4) : 'N/A',
+      year: m.release_date ? m.release_date.slice(0, 4) : '',
+      label: 'FILM', labelCls: 'lbl-movie',
+      ratingNum: m.vote_average || 0, rating: m.vote_average ? m.vote_average.toFixed(1) : '—'
     });
   };
   
@@ -172,16 +162,12 @@
       status: show.status || '',
       label: show.status === 'Ended' || show.status === 'Canceled' ? 'ENDED' : 'ONGOING',
       labelCls: show.status === 'Ended' || show.status === 'Canceled' ? 'lbl-ended' : (storeKey === 'anime' ? 'lbl-anime' : 'lbl-series'),
-      ratingNum: show.vote_average || 0,
-      rating: show.vote_average ? show.vote_average.toFixed(1) : '—'
+      ratingNum: show.vote_average || 0, rating: show.vote_average ? show.vote_average.toFixed(1) : '—'
     });
   };
   
   const fetchCollection = async (id) => {
-    try {
-      const r = await fetch(`${BASE}/collection/${id}?api_key=${TMDB_KEY}`);
-      addFranchise(await r.json());
-    } catch(e) {}
+    try { const r = await fetch(`${BASE}/collection/${id}?api_key=${TMDB_KEY}`); addFranchise(await r.json()); } catch(e) {}
   };
   
   const procMovies = async (ids) => {
@@ -192,14 +178,8 @@
       const m = r.value;
       if (m.belongs_to_collection?.id) {
         const cid = m.belongs_to_collection.id;
-        if (!colIdSet.has(cid)) {
-          colIdSet.add(cid);
-          newCols.push(cid);
-        }
-        // Don't add to partIdSet here - let the franchise handle it
-      } else {
-        addSingleMovie(m);
-      }
+        if (!colIdSet.has(cid)) { colIdSet.add(cid); newCols.push(cid); }
+      } else { addSingleMovie(m); }
     });
     if (newCols.length) await Promise.all(newCols.map(id => fetchCollection(id)));
   };
@@ -215,46 +195,34 @@
   const searchMedia = async (query, type = 'all') => {
     const normalizedQuery = norm(query);
     const queryWords = normalizedQuery.split(' ').filter(Boolean);
-    
     try {
       if (type === 'all' || type === 'movies') {
         const movieRes = await fetch(`${BASE}/search/movie?api_key=${TMDB_KEY}&query=${encodeURIComponent(query)}&page=1`);
         const movieData = await movieRes.json();
-        
         if (movieData.results) {
           const validResults = movieData.results.filter(m => {
-            const title = norm(m.title || '');
-            const origTitle = norm(m.original_title || '');
+            const title = norm(m.title || ''), origTitle = norm(m.original_title || '');
             return queryWords.every(w => title.includes(w) || origTitle.includes(w));
           });
-          
           for (const m of validResults.slice(0, 10)) {
             if (!idSet.movies.has(m.id)) {
               const details = await fetch(`${BASE}/movie/${m.id}?api_key=${TMDB_KEY}`).then(r => r.json()).catch(() => null);
               if (details?.id) {
-                if (details.belongs_to_collection?.id) {
-                  // Fetch the full collection to get all movies
-                  await fetchCollection(details.belongs_to_collection.id);
-                } else {
-                  addSingleMovie(details);
-                }
+                if (details.belongs_to_collection?.id) await fetchCollection(details.belongs_to_collection.id);
+                else addSingleMovie(details);
               }
             }
           }
         }
       }
-      
       if (type === 'all' || type === 'series' || type === 'anime') {
         const tvRes = await fetch(`${BASE}/search/tv?api_key=${TMDB_KEY}&query=${encodeURIComponent(query)}&page=1`);
         const tvData = await tvRes.json();
-        
         if (tvData.results) {
           const validResults = tvData.results.filter(show => {
-            const name = norm(show.name || '');
-            const origName = norm(show.original_name || '');
+            const name = norm(show.name || ''), origName = norm(show.original_name || '');
             return queryWords.every(w => name.includes(w) || origName.includes(w));
           });
-          
           for (const show of validResults.slice(0, 10)) {
             const isAnime = show.genre_ids?.includes(16) || norm(show.name).includes('anime');
             const storeKey = isAnime ? 'anime' : 'series';
@@ -272,48 +240,28 @@
   
   const performSearch = async () => {
     const q = searchQ.trim();
-    if (!q) {
-      applyFilter();
-      return;
-    }
-    
-    isSearching = true;
-    searchError = '';
-    
+    if (!q) { applyFilter(); return; }
+    isSearching = true; searchError = '';
     applyFilter();
-    
     if (filteredItems.length === 0 && q.length > 1) {
       await searchMedia(q, activeFilter);
       applyFilter();
-      
-      if (filteredItems.length === 0) {
-        searchError = `No results found for "${q}"`;
-      }
+      if (filteredItems.length === 0) searchError = `No results found for "${q}"`;
     }
-    
     isSearching = false;
   };
   
   const discoverFranchises = async () => {
     let tp = 200;
-    try {
-      const r = await fetch(`${BASE}/discover/movie?api_key=${TMDB_KEY}&sort_by=popularity.desc&page=1`);
-      tp = Math.min((await r.json()).total_pages || 200, 200);
-    } catch(e) {}
-    
+    try { const r = await fetch(`${BASE}/discover/movie?api_key=${TMDB_KEY}&sort_by=popularity.desc&page=1`); tp = Math.min((await r.json()).total_pages || 200, 200); } catch(e) {}
     const B = 20;
     const pages = Array.from({ length: tp }, (_, i) => i + 1);
-    
     for (let i = 0; i < pages.length; i += B) {
-      const pr = await Promise.allSettled(pages.slice(i, i + B).map(p => 
-        fetch(`${BASE}/discover/movie?api_key=${TMDB_KEY}&sort_by=popularity.desc&page=${p}`)
-          .then(r => r.json()).catch(() => ({ results: [] }))
-      ));
+      const pr = await Promise.allSettled(pages.slice(i, i + B).map(p => fetch(`${BASE}/discover/movie?api_key=${TMDB_KEY}&sort_by=popularity.desc&page=${p}`).then(r => r.json()).catch(() => ({ results: [] }))));
       const mids = [];
       pr.forEach(r => { if (r.status === 'fulfilled') (r.value.results || []).forEach(m => mids.push(m.id)); });
       for (let j = 0; j < mids.length; j += 40) await procMovies(mids.slice(j, j + 40));
     }
-    
     for (const sort of ['vote_count.desc', 'revenue.desc']) {
       for (let p = 1; p <= 40; p++) {
         try {
@@ -339,21 +287,14 @@
           if (!results.length) break;
           const ids = results.map(m => m.id).filter(id => !idSet.movies.has(id) && !partIdSet.has(id));
           for (let j = 0; j < ids.length; j += 20) {
-            const dets = await Promise.allSettled(ids.slice(j, j + 20).map(id => 
-              fetch(`${BASE}/movie/${id}?api_key=${TMDB_KEY}`).then(r => r.json()).catch(() => null)
-            ));
+            const dets = await Promise.allSettled(ids.slice(j, j + 20).map(id => fetch(`${BASE}/movie/${id}?api_key=${TMDB_KEY}`).then(r => r.json()).catch(() => null)));
             dets.forEach(res => {
               if (res.status !== 'fulfilled' || !res.value) return;
               const m = res.value;
               if (m.belongs_to_collection?.id) {
                 const cid = m.belongs_to_collection.id;
-                if (!colIdSet.has(cid)) {
-                  colIdSet.add(cid);
-                  fetchCollection(cid);
-                }
-              } else {
-                addSingleMovie(m);
-              }
+                if (!colIdSet.has(cid)) { colIdSet.add(cid); fetchCollection(cid); }
+              } else { addSingleMovie(m); }
             });
           }
           if (d.total_pages <= p) break;
@@ -364,10 +305,7 @@
   };
   
   const discoverAnime = async () => {
-    for (const url of [
-      `${BASE}/discover/tv?api_key=${TMDB_KEY}&with_genres=16&with_origin_country=JP&sort_by=popularity.desc`,
-      `${BASE}/discover/tv?api_key=${TMDB_KEY}&with_keywords=210024&sort_by=popularity.desc`
-    ]) {
+    for (const url of [`${BASE}/discover/tv?api_key=${TMDB_KEY}&with_genres=16&with_origin_country=JP&sort_by=popularity.desc`, `${BASE}/discover/tv?api_key=${TMDB_KEY}&with_keywords=210024&sort_by=popularity.desc`]) {
       for (let p = 1; p <= 50; p++) {
         try {
           const r = await fetch(`${url}&page=${p}`);
@@ -408,6 +346,11 @@
     event.preventDefault();
     goto(href);
   };
+
+  async function signOut() {
+    await supabase.auth.signOut();
+    goto('/signin');
+  }
   
   let searchTimeout;
   $effect(() => {
@@ -417,7 +360,11 @@
     return () => clearTimeout(searchTimeout);
   });
   
-  onMount(() => {
+  onMount(async () => {
+    // Get current user
+    const { data: { user: u } } = await supabase.auth.getUser();
+    user = u;
+
     discoverFranchises();
     discoverMovies();
     discoverAnime();
@@ -425,7 +372,7 @@
   });
 </script>
 
-<svelte:window onscroll={() => navScrolled = window.scrollY > 50} />
+<svelte:window onscroll={() => navScrolled = window.scrollY > 50} onclick={(e) => { if (userMenuOpen && !e.target.closest('.user-menu-wrap')) userMenuOpen = false; }} />
 
 <div class="grain"></div>
 <nav class="nav {navScrolled ? 'nav-scrolled' : ''}">
@@ -443,20 +390,50 @@
     </div>
     <div class="search-wrapper">
       <span class="search-icon">⌕</span>
-      <input 
-        type="text" 
-        class="search-input" 
-        placeholder="Search titles..." 
-        bind:value={searchQ} 
-        autocomplete="off"
-      />
-      {#if isSearching}
-        <div class="search-spinner"></div>
-      {/if}
+      <input type="text" class="search-input" placeholder="Search titles..." bind:value={searchQ} autocomplete="off" />
+      {#if isSearching}<div class="search-spinner"></div>{/if}
     </div>
     <div class="debug-indicator">
       {done ? '✓' : '⚡'} 🎭{allItems.filter(x => x.type === 'franchises').length} 🎬{allItems.filter(x => x.type === 'movies').length} 🌸{allItems.filter(x => x.type === 'anime').length} 📺{allItems.filter(x => x.type === 'series').length}
     </div>
+
+    <!-- ── USER AVATAR ── -->
+    {#if user}
+      <div class="user-menu-wrap">
+        <button class="user-avatar-btn" onclick={() => userMenuOpen = !userMenuOpen} title={userName}>
+          {#if userAvatar}
+            <img src={userAvatar} alt={userName} class="user-avatar-img" referrerpolicy="no-referrer" />
+          {:else}
+            <div class="user-avatar-initials">{userInitials()}</div>
+          {/if}
+          <div class="user-online-dot"></div>
+        </button>
+
+        {#if userMenuOpen}
+          <div class="user-dropdown">
+            <!-- Profile row -->
+            <div class="user-dropdown-profile">
+              {#if userAvatar}
+                <img src={userAvatar} alt={userName} class="user-dropdown-avatar" referrerpolicy="no-referrer" />
+              {:else}
+                <div class="user-dropdown-initials">{userInitials()}</div>
+              {/if}
+              <div class="user-dropdown-info">
+                <div class="user-dropdown-name">{userName}</div>
+                <div class="user-dropdown-email">{user.email}</div>
+              </div>
+            </div>
+            <div class="user-dropdown-divider"></div>
+            <button class="user-dropdown-item" onclick={signOut}>
+              <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+                <path d="M5 1H2a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h3M9 9l3-3-3-3M12 6.5H5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              Sign out
+            </button>
+          </div>
+        {/if}
+      </div>
+    {/if}
   </div>
 </nav>
 
@@ -473,9 +450,7 @@
         <div class="hero-right">
           <a href="/recommendations" class="recommend-btn">
             <span>✦</span>RECOMMEND ME!
-            <svg width="12" height="12" viewBox="0 0 14 14" fill="none">
-              <path d="M2 7h10M7 2l5 5-5 5" stroke="currentColor" stroke-width="1.5"/>
-            </svg>
+            <svg width="12" height="12" viewBox="0 0 14 14" fill="none"><path d="M2 7h10M7 2l5 5-5 5" stroke="currentColor" stroke-width="1.5"/></svg>
           </a>
           <div class="text-[0.55rem] font-mono text-[rgba(201,168,76,0.4)] tracking-widest text-right">PERSONALISED PICKS</div>
         </div>
@@ -497,8 +472,8 @@
         {#key page}
           <div class="franchise-grid page-transition">
             {#each currentItems as f (f.id)}
-              <a class="card {f.type === 'anime' ? 'anime-card' : f.type === 'series' ? 'series-card' : f.isFranchiseMovie ? 'franchise-movie-card' : ''}" 
-                 href="app/guide?type={f.type}&id={f.id}" 
+              <a class="card {f.type === 'anime' ? 'anime-card' : f.type === 'series' ? 'series-card' : f.isFranchiseMovie ? 'franchise-movie-card' : ''}"
+                 href="app/guide?type={f.type}&id={f.id}"
                  onclick={(e) => goToGuide(`app/guide?type=${f.type}&id=${f.id}`, e)}>
                 <div class="card-media">
                   <img src={f.poster} alt={esc(f.title)} loading="lazy" onerror={(e) => e.target.style.display = 'none'} />
@@ -542,14 +517,7 @@
           <span>Loading titles...</span>
         </div>
       {/if}
-      
-      {#if !done && currentItems.length === 0 && !searchQ.trim()}
-        <div class="loading-more">
-          <div class="spinner-sm"></div>
-          <span>Loading everything...</span>
-        </div>
-      {/if}
-      
+
       {#if totalFiltered > 0 && np > 1}
         <div class="pagination-bar">
           <div class="pagination-info">Page <strong>{page + 1}</strong> of <strong>{np}</strong> · {totalFiltered} total</div>
@@ -568,742 +536,306 @@
     </section>
   </div>
 </main>
+<!-- Add this to your nav-right div, near the user menu -->
+<div class="nav-right">
+  <!-- ... existing filter bar and search ... -->
+  
+  <!-- Add this chat navigation button -->
+  <a href="/app/chat" class="chat-nav-btn" title="Open Chat">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" stroke="currentColor" stroke-width="1.5" fill="none"/>
+    </svg>
+  </a>
+  
+  <!-- ... user menu ... -->
+</div>
 
 <style>
-  :global(*) {
-    margin: 0;
-    padding: 0;
-    box-sizing: border-box;
-  }
-  
-  :global(body) {
-    background: #050505;
-    color: #f0ece4;
-    font-family: "Sora", sans-serif;
-    overflow-x: hidden;
-  }
+  :global(*) { margin: 0; padding: 0; box-sizing: border-box; }
+  :global(body) { background: #050505; color: #f0ece4; font-family: "Sora", sans-serif; overflow-x: hidden; }
 
-  .grain {
-    position: fixed;
-    inset: 0;
-    z-index: 999;
-    pointer-events: none;
-    opacity: 0.04;
-    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  }
+  .grain { position: fixed; inset: 0; z-index: 999; pointer-events: none; opacity: 0.04; background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); }
 
-  .nav {
-    position: fixed;
-    top: 0;
-    width: 100%;
-    padding: 16px 50px;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    z-index: 500;
-    transition: 0.4s ease;
-    box-sizing: border-box;
-  }
+  .nav { position: fixed; top: 0; width: 100%; padding: 16px 50px; display: flex; justify-content: space-between; align-items: center; z-index: 500; transition: 0.4s ease; box-sizing: border-box; }
+  .nav-scrolled { background: rgba(5,5,5,0.95); backdrop-filter: blur(16px); border-bottom: 1px solid rgba(255,255,255,0.07); }
+  .nav-logo { display: flex; align-items: baseline; cursor: pointer; gap: 0; text-decoration: none; }
+  .nav-logo-mark { font-family: "Cormorant Garamond"; font-size: 2.2rem; color: #c9a84c; font-weight: 700; line-height: 1; }
+  .nav-logo-text { font-family: "Cormorant Garamond"; font-size: 1.6rem; font-weight: 300; color: #f0ece4; }
+  .nav-logo-accent { font-family: "Cormorant Garamond"; font-style: italic; font-size: 1.6rem; font-weight: 600; opacity: 0.85; color: #f0ece4; }
+  .nav-logo-dot { width: 5px; height: 5px; background: #c9a84c; border-radius: 50%; margin-left: 5px; box-shadow: 0 0 8px #c9a84c; }
 
-  .nav-scrolled {
-    background: rgba(5, 5, 5, 0.95);
-    backdrop-filter: blur(16px);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
-  }
+  .nav-right { display: flex; align-items: center; gap: 16px; }
 
-  .nav-logo {
-    display: flex;
-    align-items: baseline;
-    cursor: pointer;
-    gap: 0;
-    text-decoration: none;
-  }
+  .search-wrapper { display: flex; align-items: center; background: rgba(20,20,20,0.8); border: 1px solid rgba(201,168,76,0.3); border-radius: 40px; padding: 5px 14px; backdrop-filter: blur(8px); transition: 0.25s; position: relative; }
+  .search-wrapper:focus-within { border-color: #c9a84c; background: rgba(10,10,10,0.95); }
+  .search-icon { color: #c9a84c; font-size: 15px; margin-right: 8px; }
+  .search-input { background: transparent; border: none; color: #f0ece4; font-family: "Space Mono"; font-size: 0.78rem; padding: 8px 0; width: 220px; outline: none; }
+  .search-input::placeholder { color: rgba(240,236,228,0.35); }
+  .search-spinner { width: 16px; height: 16px; border: 1.5px solid rgba(201,168,76,0.2); border-top-color: #c9a84c; border-radius: 50%; animation: spin 0.8s linear infinite; margin-left: 8px; }
 
-  .nav-logo-mark {
-    font-family: "Cormorant Garamond";
-    font-size: 2.2rem;
-    color: #c9a84c;
-    font-weight: 700;
-    line-height: 1;
-  }
+  .debug-indicator { font-family: "Space Mono"; font-size: 0.62rem; color: #c9a84c; opacity: 0.6; white-space: nowrap; max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
 
-  .nav-logo-text {
-    font-family: "Cormorant Garamond";
-    font-size: 1.6rem;
-    font-weight: 300;
-    color: #f0ece4;
-  }
-
-  .nav-logo-accent {
-    font-family: "Cormorant Garamond";
-    font-style: italic;
-    font-size: 1.6rem;
-    font-weight: 600;
-    opacity: 0.85;
-    color: #f0ece4;
-  }
-
-  .nav-logo-dot {
-    width: 5px;
-    height: 5px;
-    background: #c9a84c;
-    border-radius: 50%;
-    margin-left: 5px;
-    box-shadow: 0 0 8px #c9a84c;
-  }
-
-  .nav-right {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-  }
-
-  .search-wrapper {
-    display: flex;
-    align-items: center;
-    background: rgba(20, 20, 20, 0.8);
-    border: 1px solid rgba(201, 168, 76, 0.3);
-    border-radius: 40px;
-    padding: 5px 14px;
-    backdrop-filter: blur(8px);
-    transition: 0.25s;
-    position: relative;
-  }
-
-  .search-wrapper:focus-within {
-    border-color: #c9a84c;
-    background: rgba(10, 10, 10, 0.95);
-  }
-
-  .search-icon {
-    color: #c9a84c;
-    font-size: 15px;
-    margin-right: 8px;
-  }
-
-  .search-input {
-    background: transparent;
-    border: none;
-    color: #f0ece4;
-    font-family: "Space Mono";
-    font-size: 0.78rem;
-    padding: 8px 0;
-    width: 220px;
-    outline: none;
-  }
-
-  .search-input::placeholder {
-    color: rgba(240, 236, 228, 0.35);
-  }
-
-  .search-spinner {
-    width: 16px;
-    height: 16px;
-    border: 1.5px solid rgba(201, 168, 76, 0.2);
-    border-top-color: #c9a84c;
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-    margin-left: 8px;
-  }
-
-  .debug-indicator {
-    font-family: "Space Mono";
-    font-size: 0.62rem;
-    color: #c9a84c;
-    opacity: 0.6;
-    white-space: nowrap;
-    max-width: 240px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .filter-bar {
-    display: flex;
-    gap: 0;
-    border: 1px solid rgba(201, 168, 76, 0.25);
-    border-radius: 3px;
-    overflow: hidden;
-    flex-shrink: 0;
-  }
-
-  .filter-btn {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    background: none;
-    border: none;
-    color: rgba(240, 236, 228, 0.35);
-    font-family: "Space Mono";
-    font-size: 0.6rem;
-    letter-spacing: 0.1em;
-    padding: 7px 14px;
-    cursor: pointer;
-    transition: 0.2s;
-    border-right: 1px solid rgba(201, 168, 76, 0.15);
-  }
-
-  .filter-btn:last-child {
-    border-right: none;
-  }
-
-  .filter-btn.active {
-    background: rgba(201, 168, 76, 0.12);
-    color: #c9a84c;
-  }
-
-  .filter-btn:hover:not(.active) {
-    color: rgba(240, 236, 228, 0.6);
-    background: rgba(255, 255, 255, 0.03);
-  }
-
-  .filter-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    flex-shrink: 0;
-  }
-
+  .filter-bar { display: flex; gap: 0; border: 1px solid rgba(201,168,76,0.25); border-radius: 3px; overflow: hidden; flex-shrink: 0; }
+  .filter-btn { display: flex; align-items: center; gap: 6px; background: none; border: none; color: rgba(240,236,228,0.35); font-family: "Space Mono"; font-size: 0.6rem; letter-spacing: 0.1em; padding: 7px 14px; cursor: pointer; transition: 0.2s; border-right: 1px solid rgba(201,168,76,0.15); }
+  .filter-btn:last-child { border-right: none; }
+  .filter-btn.active { background: rgba(201,168,76,0.12); color: #c9a84c; }
+  .filter-btn:hover:not(.active) { color: rgba(240,236,228,0.6); background: rgba(255,255,255,0.03); }
+  .filter-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
   .filter-dot.all { background: #c9a84c; }
   .filter-dot.franchises { background: #a07830; }
   .filter-dot.movies { background: #c9a84c; }
   .filter-dot.anime { background: #e05c7a; }
   .filter-dot.series { background: #5fbf8c; }
 
-  .recommend-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    background: linear-gradient(135deg, rgba(201, 168, 76, 0.18), rgba(201, 168, 76, 0.06));
-    border: 1px solid rgba(201, 168, 76, 0.55);
-    border-radius: 40px;
-    padding: 9px 22px;
-    font-family: "Space Mono";
-    font-size: 0.68rem;
-    letter-spacing: 0.1em;
-    color: #c9a84c;
-    cursor: pointer;
-    transition: all 0.3s ease;
-    text-decoration: none;
+  /* ══════════════════════════════
+     USER AVATAR & DROPDOWN
+  ══════════════════════════════ */
+  .user-menu-wrap {
     position: relative;
-    overflow: hidden;
-  }
-
-  .recommend-btn::before {
-    content: "";
-    position: absolute;
-    inset: 0;
-    background: linear-gradient(135deg, rgba(201, 168, 76, 0.3), rgba(201, 168, 76, 0.08));
-    opacity: 0;
-    transition: opacity 0.3s;
-  }
-
-  .recommend-btn:hover::before { opacity: 1; }
-  .recommend-btn:hover {
-    border-color: #c9a84c;
-    box-shadow: 0 0 20px rgba(201, 168, 76, 0.25);
-    transform: translateY(-1px);
-  }
-
-  .container {
-    padding: 0 50px;
-    width: 100%;
-    max-width: 100%;
-  }
-
-  .hero {
-    min-height: 52vh;
-    padding-top: 100px;
-    display: flex;
-    align-items: center;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-  }
-
-  .hero-inner {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-end;
-    width: 100%;
-    gap: 40px;
-    flex-wrap: wrap;
-    padding-bottom: 40px;
-  }
-
-  .hero-left { flex: 1; }
-  .hero-right {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    gap: 12px;
     flex-shrink: 0;
   }
 
-  .overtitle {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    font-family: "Space Mono";
-    font-size: 0.68rem;
-    letter-spacing: 0.2em;
-    color: #c9a84c;
-    margin-bottom: 20px;
-  }
-
-  .overtitle .bar {
-    width: 36px;
-    height: 1px;
-    background: #c9a84c;
-  }
-
-  .title {
-    font-family: "Cormorant Garamond";
-    font-size: clamp(3.5rem, 6vw, 5.5rem);
-    font-weight: 600;
-    line-height: 1;
-  }
-
-  .title em {
-    font-style: italic;
-    font-weight: 300;
-    opacity: 0.65;
-  }
-
-  .subtitle {
-    max-width: 520px;
-    margin-top: 28px;
-    font-size: 1rem;
-    opacity: 0.45;
-    line-height: 1.7;
-  }
-
-  .live-counter {
-    display: inline-flex;
-    align-items: center;
-    gap: 10px;
-    margin-top: 24px;
-    font-family: "Space Mono";
-    font-size: 0.68rem;
-    letter-spacing: 0.12em;
-    color: #c9a84c;
-  }
-
-  .live-dot {
-    width: 7px;
-    height: 7px;
+  .user-avatar-btn {
+    position: relative;
+    width: 38px; height: 38px;
     border-radius: 50%;
-    background: #c9a84c;
-    animation: livePulse 1.2s ease-in-out infinite;
-  }
-
-  @keyframes livePulse {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50% { opacity: 0.4; transform: scale(0.6); }
-  }
-
-  .franchise-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-    gap: 28px;
-    padding: 60px 0 0;
-  }
-
-  .pagination-bar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 48px 0 80px;
-    border-top: 1px solid rgba(255, 255, 255, 0.05);
-    margin-top: 48px;
-    flex-wrap: wrap;
-    gap: 16px;
-  }
-
-  .pagination-info {
-    font-family: "Space Mono";
-    font-size: 0.65rem;
-    color: rgba(240, 236, 228, 0.3);
-    letter-spacing: 0.1em;
-  }
-
-  .pagination-info strong {
-    color: #c9a84c;
-    font-weight: 700;
-  }
-
-  .pagination-dots {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    flex-wrap: wrap;
-  }
-
-  .pg-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: rgba(255, 255, 255, 0.12);
-    cursor: pointer;
-    transition: all 0.2s;
-    border: none;
-    padding: 0;
-  }
-
-  .pg-dot.active {
-    background: #c9a84c;
-    width: 20px;
-    border-radius: 3px;
-    box-shadow: 0 0 8px rgba(201, 168, 76, 0.5);
-  }
-
-  .pg-dot:hover:not(.active) {
-    background: rgba(201, 168, 76, 0.4);
-  }
-
-  .pagination-btns {
-    display: flex;
-    gap: 10px;
-  }
-
-  .pg-btn {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    background: none;
-    border: 1px solid rgba(201, 168, 76, 0.25);
-    color: rgba(240, 236, 228, 0.5);
-    font-family: "Space Mono";
-    font-size: 0.65rem;
-    letter-spacing: 0.1em;
-    padding: 10px 20px;
-    cursor: pointer;
-    transition: all 0.2s;
-    border-radius: 2px;
-  }
-
-  .pg-btn:hover:not(:disabled) {
-    border-color: #c9a84c;
-    color: #c9a84c;
-    background: rgba(201, 168, 76, 0.06);
-  }
-
-  .pg-btn:disabled {
-    opacity: 0.2;
-    cursor: not-allowed;
-  }
-
-  .pg-btn.next {
+    border: 1.5px solid rgba(201, 168, 76, 0.4);
     background: rgba(201, 168, 76, 0.08);
-    border-color: rgba(201, 168, 76, 0.4);
+    cursor: pointer;
+    padding: 0;
+    overflow: visible;
+    transition: border-color 0.2s, box-shadow 0.2s;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .user-avatar-btn:hover {
+    border-color: #c9a84c;
+    box-shadow: 0 0 0 3px rgba(201, 168, 76, 0.15);
+  }
+
+  .user-avatar-img {
+    width: 100%; height: 100%;
+    border-radius: 50%;
+    object-fit: cover;
+    display: block;
+  }
+
+  .user-avatar-initials {
+    font-family: "Space Mono";
+    font-size: 0.65rem;
+    font-weight: 700;
     color: #c9a84c;
+    letter-spacing: 0.05em;
+    line-height: 1;
+    pointer-events: none;
   }
 
-  .page-transition {
-    animation: pageFade 0.25s ease both;
+  .user-online-dot {
+    position: absolute;
+    bottom: 0; right: 0;
+    width: 9px; height: 9px;
+    background: #5fbf8c;
+    border: 2px solid #050505;
+    border-radius: 50%;
+    box-shadow: 0 0 6px rgba(95, 191, 140, 0.6);
   }
 
-  @keyframes pageFade {
-    from { opacity: 0; transform: translateY(12px); }
-    to { opacity: 1; transform: translateY(0); }
+  .user-dropdown {
+    position: absolute;
+    top: calc(100% + 10px);
+    right: 0;
+    width: 230px;
+    background: #0d0d0d;
+    border: 1px solid rgba(201, 168, 76, 0.2);
+    border-radius: 4px;
+    overflow: hidden;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(201, 168, 76, 0.06);
+    animation: dropIn 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+    z-index: 600;
+  }
+  @keyframes dropIn {
+    from { opacity: 0; transform: translateY(-8px) scale(0.97); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
   }
 
-  .loading-more {
-    padding: 32px 0 80px;
+  .user-dropdown-profile {
     display: flex;
     align-items: center;
-    justify-content: center;
-    gap: 14px;
-    font-family: "Space Mono";
-    font-size: 0.68rem;
-    color: #c9a84c;
-    opacity: 0.6;
+    gap: 12px;
+    padding: 16px;
+    background: rgba(201, 168, 76, 0.04);
   }
 
-  .spinner-sm {
-    width: 20px;
-    height: 20px;
-    border: 1.5px solid rgba(201, 168, 76, 0.2);
-    border-top-color: #c9a84c;
+  .user-dropdown-avatar {
+    width: 40px; height: 40px;
     border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-  }
-
-  @keyframes spin {
-    to { transform: rotate(360deg); }
-  }
-
-  .card {
-    position: relative;
-    background: #0a0a0a;
-    border: 1px solid rgba(255, 255, 255, 0.05);
-    transition: border-color 0.35s ease, transform 0.35s ease;
-    overflow: hidden;
-    cursor: pointer;
-    text-decoration: none;
-    display: block;
-    color: inherit;
-  }
-
-  .card:hover {
-    border-color: #c9a84c;
-    transform: translateY(-8px);
-  }
-
-  .card.anime-card:hover {
-    border-color: #e05c7a;
-  }
-
-  .card.series-card:hover {
-    border-color: #5fbf8c;
-  }
-
-  .card.franchise-movie-card:hover {
-    border-color: #d4a84c;
-  }
-
-  .card-media {
-    position: relative;
-    aspect-ratio: 2/3;
-    overflow: hidden;
-    background: #111;
-  }
-
-  .card-media img {
-    width: 100%;
-    height: 100%;
     object-fit: cover;
-    opacity: 0.7;
-    transition: opacity 0.5s, transform 0.5s;
-    display: block;
-    position: relative;
-    z-index: 1;
+    border: 1px solid rgba(201, 168, 76, 0.3);
+    flex-shrink: 0;
   }
 
-  .card:hover .card-media img {
-    opacity: 1;
-    transform: scale(1.06);
+  .user-dropdown-initials {
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    background: rgba(201, 168, 76, 0.12);
+    border: 1px solid rgba(201, 168, 76, 0.3);
+    display: flex; align-items: center; justify-content: center;
+    font-family: "Space Mono"; font-size: 0.7rem; font-weight: 700;
+    color: #c9a84c;
+    flex-shrink: 0;
   }
 
-  .card-media::before {
-    content: "";
-    position: absolute;
-    inset: 0;
-    background: linear-gradient(90deg, #111 0%, #1a1a1a 50%, #111 100%);
-    background-size: 200% 100%;
-    animation: shimmer 1.4s infinite;
-    z-index: 0;
+  .user-dropdown-info { min-width: 0; }
+  .user-dropdown-name {
+    font-family: "Sora";
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: #f0ece4;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
-
-  @keyframes shimmer {
-    0% { background-position: 200% 0; }
-    100% { background-position: -200% 0; }
-  }
-
-  .card-badge {
-    position: absolute;
-    top: 12px;
-    right: 12px;
-    z-index: 2;
-    font-family: "Space Mono";
-    font-size: 0.55rem;
-    letter-spacing: 0.1em;
-    padding: 4px 9px;
-    border-radius: 2px;
-  }
-
-  .lbl-blue {
-    background: rgba(30, 58, 138, 0.9);
-    color: #93c5fd;
-  }
-
-  .lbl-green {
-    background: rgba(6, 78, 59, 0.9);
-    color: #6ee7b7;
-  }
-
-  .lbl-anime {
-    background: rgba(180, 40, 80, 0.85);
-    color: #f9a8c9;
-  }
-
-  .lbl-series {
-    background: rgba(10, 100, 80, 0.85);
-    color: #6ee7b7;
-  }
-
-  .lbl-movie {
-    background: rgba(100, 80, 10, 0.85);
-    color: #fde68a;
-  }
-
-  .lbl-ended {
-    background: rgba(60, 60, 60, 0.9);
-    color: rgba(240, 236, 228, 0.5);
-  }
-
-  .card-type-strip {
-    position: absolute;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    z-index: 2;
-    padding: 4px 10px;
+  .user-dropdown-email {
     font-family: "Space Mono";
     font-size: 0.52rem;
-    letter-spacing: 0.12em;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-
-  .anime-strip {
-    background: rgba(180, 40, 80, 0.75);
-    color: #f9a8c9;
-  }
-
-  .series-strip {
-    background: rgba(10, 100, 80, 0.75);
-    color: #6ee7b7;
-  }
-
-  .movies-strip {
-    background: rgba(180, 140, 20, 0.75);
-    color: #f9e08c;
-  }
-
-  .movie-strip {
-    background: rgba(140, 100, 10, 0.75);
-    color: #fde68a;
-  }
-
-  .franchise-movie-strip {
-    background: rgba(180, 140, 40, 0.75);
-    color: #f9e08c;
-  }
-
-  .card-content {
-    padding: 24px 28px 28px;
-  }
-
-  .card-meta {
-    display: flex;
-    justify-content: space-between;
-    font-family: "Space Mono";
-    font-size: 0.6rem;
-    color: #c9a84c;
-    margin-bottom: 12px;
-  }
-
-  .anime-meta {
-    color: #e05c7a;
-  }
-
-  .series-meta {
-    color: #5fbf8c;
-  }
-
-  .franchise-movie-meta {
-    color: #d4a84c;
-  }
-
-  .card-title {
-    font-family: "Cormorant Garamond";
-    font-size: 1.65rem;
-    font-weight: 600;
-    margin-bottom: 12px;
-    line-height: 1.15;
-  }
-
-  .card-desc {
-    font-size: 0.82rem;
-    opacity: 0.38;
-    line-height: 1.55;
-    margin-bottom: 22px;
-  }
-
-  .card-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    font-family: "Space Mono";
-    font-size: 0.65rem;
-    letter-spacing: 0.08em;
-    color: rgba(240, 236, 228, 0.5);
-    border-bottom: 1px solid rgba(201, 168, 76, 0.25);
-    padding-bottom: 4px;
-    transition: 0.25s;
-  }
-
-  .card:hover .card-btn {
-    color: #c9a84c;
-    border-bottom-color: #c9a84c;
-  }
-
-  .card.anime-card:hover .card-btn {
-    color: #e05c7a;
-    border-bottom-color: #e05c7a;
-  }
-
-  .card.series-card:hover .card-btn {
-    color: #5fbf8c;
-    border-bottom-color: #5fbf8c;
-  }
-
-  .card.franchise-movie-card:hover .card-btn {
-    color: #d4a84c;
-    border-bottom-color: #d4a84c;
-  }
-
-  .no-results {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    padding: 80px 0;
-    gap: 16px;
     color: rgba(240, 236, 228, 0.3);
-    font-family: "Space Mono";
-    font-size: 0.72rem;
-    letter-spacing: 0.12em;
+    letter-spacing: 0.04em;
+    margin-top: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
-  .retry-btn {
-    margin-top: 16px;
-    padding: 8px 20px;
-    background: rgba(201, 168, 76, 0.1);
-    border: 1px solid rgba(201, 168, 76, 0.4);
-    color: #c9a84c;
+  .user-dropdown-divider {
+    height: 1px;
+    background: rgba(255, 255, 255, 0.05);
+  }
+
+  .user-dropdown-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 12px 16px;
+    background: transparent;
+    border: none;
+    color: rgba(240, 236, 228, 0.5);
     font-family: "Space Mono";
-    font-size: 0.65rem;
+    font-size: 0.62rem;
+    letter-spacing: 0.08em;
     cursor: pointer;
-    border-radius: 3px;
-    transition: all 0.2s;
+    transition: background 0.15s, color 0.15s;
+    text-align: left;
+  }
+  .user-dropdown-item:hover {
+    background: rgba(231, 76, 60, 0.08);
+    color: #e74c3c;
   }
 
-  .retry-btn:hover {
-    background: rgba(201, 168, 76, 0.2);
-    border-color: #c9a84c;
-  }
+  /* rest of the styles unchanged */
+  .recommend-btn { display: inline-flex; align-items: center; gap: 8px; background: linear-gradient(135deg, rgba(201,168,76,0.18), rgba(201,168,76,0.06)); border: 1px solid rgba(201,168,76,0.55); border-radius: 40px; padding: 9px 22px; font-family: "Space Mono"; font-size: 0.68rem; letter-spacing: 0.1em; color: #c9a84c; cursor: pointer; transition: all 0.3s ease; text-decoration: none; position: relative; overflow: hidden; }
+  .recommend-btn::before { content: ""; position: absolute; inset: 0; background: linear-gradient(135deg, rgba(201,168,76,0.3), rgba(201,168,76,0.08)); opacity: 0; transition: opacity 0.3s; }
+  .recommend-btn:hover::before { opacity: 1; }
+  .recommend-btn:hover { border-color: #c9a84c; box-shadow: 0 0 20px rgba(201,168,76,0.25); transform: translateY(-1px); }
+
+  .container { padding: 0 50px; width: 100%; max-width: 100%; }
+  .hero { min-height: 52vh; padding-top: 100px; display: flex; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.05); }
+  .hero-inner { display: flex; justify-content: space-between; align-items: flex-end; width: 100%; gap: 40px; flex-wrap: wrap; padding-bottom: 40px; }
+  .hero-left { flex: 1; }
+  .hero-right { display: flex; flex-direction: column; align-items: flex-end; gap: 12px; flex-shrink: 0; }
+  .overtitle { display: flex; align-items: center; gap: 14px; font-family: "Space Mono"; font-size: 0.68rem; letter-spacing: 0.2em; color: #c9a84c; margin-bottom: 20px; }
+  .overtitle .bar { width: 36px; height: 1px; background: #c9a84c; }
+  .title { font-family: "Cormorant Garamond"; font-size: clamp(3.5rem,6vw,5.5rem); font-weight: 600; line-height: 1; }
+  .title em { font-style: italic; font-weight: 300; opacity: 0.65; }
+  .subtitle { max-width: 520px; margin-top: 28px; font-size: 1rem; opacity: 0.45; line-height: 1.7; }
+  .live-counter { display: inline-flex; align-items: center; gap: 10px; margin-top: 24px; font-family: "Space Mono"; font-size: 0.68rem; letter-spacing: 0.12em; color: #c9a84c; }
+  .live-dot { width: 7px; height: 7px; border-radius: 50%; background: #c9a84c; animation: livePulse 1.2s ease-in-out infinite; }
+  @keyframes livePulse { 0%,100%{opacity:1;transform:scale(1)}50%{opacity:0.4;transform:scale(0.6)} }
+
+  .franchise-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 28px; padding: 60px 0 0; }
+  .pagination-bar { display: flex; align-items: center; justify-content: space-between; padding: 48px 0 80px; border-top: 1px solid rgba(255,255,255,0.05); margin-top: 48px; flex-wrap: wrap; gap: 16px; }
+  .pagination-info { font-family: "Space Mono"; font-size: 0.65rem; color: rgba(240,236,228,0.3); letter-spacing: 0.1em; }
+  .pagination-info strong { color: #c9a84c; font-weight: 700; }
+  .pagination-dots { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .pg-dot { width: 6px; height: 6px; border-radius: 50%; background: rgba(255,255,255,0.12); cursor: pointer; transition: all 0.2s; border: none; padding: 0; }
+  .pg-dot.active { background: #c9a84c; width: 20px; border-radius: 3px; box-shadow: 0 0 8px rgba(201,168,76,0.5); }
+  .pg-dot:hover:not(.active) { background: rgba(201,168,76,0.4); }
+  .pagination-btns { display: flex; gap: 10px; }
+  .pg-btn { display: flex; align-items: center; gap: 8px; background: none; border: 1px solid rgba(201,168,76,0.25); color: rgba(240,236,228,0.5); font-family: "Space Mono"; font-size: 0.65rem; letter-spacing: 0.1em; padding: 10px 20px; cursor: pointer; transition: all 0.2s; border-radius: 2px; }
+  .pg-btn:hover:not(:disabled) { border-color: #c9a84c; color: #c9a84c; background: rgba(201,168,76,0.06); }
+  .pg-btn:disabled { opacity: 0.2; cursor: not-allowed; }
+  .pg-btn.next { background: rgba(201,168,76,0.08); border-color: rgba(201,168,76,0.4); color: #c9a84c; }
+  .page-transition { animation: pageFade 0.25s ease both; }
+  @keyframes pageFade { from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)} }
+  .loading-more { padding: 32px 0 80px; display: flex; align-items: center; justify-content: center; gap: 14px; font-family: "Space Mono"; font-size: 0.68rem; color: #c9a84c; opacity: 0.6; }
+  .spinner-sm { width: 20px; height: 20px; border: 1.5px solid rgba(201,168,76,0.2); border-top-color: #c9a84c; border-radius: 50%; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to{transform:rotate(360deg)} }
+
+  .card { position: relative; background: #0a0a0a; border: 1px solid rgba(255,255,255,0.05); transition: border-color 0.35s ease, transform 0.35s ease; overflow: hidden; cursor: pointer; text-decoration: none; display: block; color: inherit; }
+  .card:hover { border-color: #c9a84c; transform: translateY(-8px); }
+  .card.anime-card:hover { border-color: #e05c7a; }
+  .card.series-card:hover { border-color: #5fbf8c; }
+  .card.franchise-movie-card:hover { border-color: #d4a84c; }
+  .card-media { position: relative; aspect-ratio: 2/3; overflow: hidden; background: #111; }
+  .card-media img { width: 100%; height: 100%; object-fit: cover; opacity: 0.7; transition: opacity 0.5s, transform 0.5s; display: block; position: relative; z-index: 1; }
+  .card:hover .card-media img { opacity: 1; transform: scale(1.06); }
+  .card-media::before { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg,#111 0%,#1a1a1a 50%,#111 100%); background-size: 200% 100%; animation: shimmer 1.4s infinite; z-index: 0; }
+  @keyframes shimmer { 0%{background-position:200% 0}100%{background-position:-200% 0} }
+  .card-badge { position: absolute; top: 12px; right: 12px; z-index: 2; font-family: "Space Mono"; font-size: 0.55rem; letter-spacing: 0.1em; padding: 4px 9px; border-radius: 2px; }
+  .lbl-blue { background: rgba(30,58,138,0.9); color: #93c5fd; }
+  .lbl-green { background: rgba(6,78,59,0.9); color: #6ee7b7; }
+  .lbl-anime { background: rgba(180,40,80,0.85); color: #f9a8c9; }
+  .lbl-series { background: rgba(10,100,80,0.85); color: #6ee7b7; }
+  .lbl-movie { background: rgba(100,80,10,0.85); color: #fde68a; }
+  .lbl-ended { background: rgba(60,60,60,0.9); color: rgba(240,236,228,0.5); }
+  .card-type-strip { position: absolute; bottom: 0; left: 0; right: 0; z-index: 2; padding: 4px 10px; font-family: "Space Mono"; font-size: 0.52rem; letter-spacing: 0.12em; display: flex; align-items: center; gap: 6px; }
+  .anime-strip { background: rgba(180,40,80,0.75); color: #f9a8c9; }
+  .series-strip { background: rgba(10,100,80,0.75); color: #6ee7b7; }
+  .movies-strip { background: rgba(180,140,20,0.75); color: #f9e08c; }
+  .movie-strip { background: rgba(140,100,10,0.75); color: #fde68a; }
+  .franchise-movie-strip { background: rgba(180,140,40,0.75); color: #f9e08c; }
+  .card-content { padding: 24px 28px 28px; }
+  .card-meta { display: flex; justify-content: space-between; font-family: "Space Mono"; font-size: 0.6rem; color: #c9a84c; margin-bottom: 12px; }
+  .anime-meta { color: #e05c7a; }
+  .series-meta { color: #5fbf8c; }
+  .franchise-movie-meta { color: #d4a84c; }
+  .card-title { font-family: "Cormorant Garamond"; font-size: 1.65rem; font-weight: 600; margin-bottom: 12px; line-height: 1.15; }
+  .card-desc { font-size: 0.82rem; opacity: 0.38; line-height: 1.55; margin-bottom: 22px; }
+  .card-btn { display: inline-flex; align-items: center; gap: 8px; font-family: "Space Mono"; font-size: 0.65rem; letter-spacing: 0.08em; color: rgba(240,236,228,0.5); border-bottom: 1px solid rgba(201,168,76,0.25); padding-bottom: 4px; transition: 0.25s; }
+  .card:hover .card-btn { color: #c9a84c; border-bottom-color: #c9a84c; }
+  .card.anime-card:hover .card-btn { color: #e05c7a; border-bottom-color: #e05c7a; }
+  .card.series-card:hover .card-btn { color: #5fbf8c; border-bottom-color: #5fbf8c; }
+  .card.franchise-movie-card:hover .card-btn { color: #d4a84c; border-bottom-color: #d4a84c; }
+  .no-results { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 80px 0; gap: 16px; color: rgba(240,236,228,0.3); font-family: "Space Mono"; font-size: 0.72rem; letter-spacing: 0.12em; }
+  .retry-btn { margin-top: 16px; padding: 8px 20px; background: rgba(201,168,76,0.1); border: 1px solid rgba(201,168,76,0.4); color: #c9a84c; font-family: "Space Mono"; font-size: 0.65rem; cursor: pointer; border-radius: 3px; transition: all 0.2s; }
+  .retry-btn:hover { background: rgba(201,168,76,0.2); border-color: #c9a84c; }
 
   @media (max-width: 768px) {
-    .nav {
-      padding: 14px 20px;
-    }
-    .container {
-      padding: 0 20px;
-    }
-    .franchise-grid {
-      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-      gap: 20px;
-      padding: 40px 0 0;
-    }
-    .search-input {
-      width: 140px;
-    }
-    .filter-btn {
-      padding: 6px 8px;
-      font-size: 0.52rem;
-    }
-    .hero-right {
-      align-items: flex-start;
-    }
+    .nav { padding: 14px 20px; }
+    .container { padding: 0 20px; }
+    .franchise-grid { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 20px; padding: 40px 0 0; }
+    .search-input { width: 140px; }
+    .filter-btn { padding: 6px 8px; font-size: 0.52rem; }
+    .hero-right { align-items: flex-start; }
+    .debug-indicator { display: none; }
+  }
+  .chat-nav-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    border-radius: 50%;
+    background: rgba(201, 168, 76, 0.08);
+    border: 1px solid rgba(201, 168, 76, 0.3);
+    color: #c9a84c;
+    cursor: pointer;
+    transition: all 0.2s;
+    text-decoration: none;
+  }
+  
+  .chat-nav-btn:hover {
+    background: rgba(201, 168, 76, 0.15);
+    border-color: #c9a84c;
+    transform: scale(1.05);
   }
 </style>
