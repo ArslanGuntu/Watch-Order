@@ -36,14 +36,14 @@
   let showMovieModal = $state(false);
 
   // ── REPLY STATE ──
-  let replyingTo     = $state(null); // { id, content, sender_name, entities }
+  let replyingTo     = $state(null);
 
   // ── DELETE MENU STATE ──
-  let deleteMenu     = $state(null); // message object
+  let deleteMenu     = $state(null);
   let deleteMenuPos  = $state({ x: 0, y: 0 });
 
-  // ── STREAK REQUEST ──
-  let processingReq  = $state(null);
+  // ── STREAKS ──
+  let myStreaksCount = $state(0);
 
   function getInitials(name) {
     return (name ?? '?').slice(0, 2).toUpperCase();
@@ -62,10 +62,11 @@
       id:       session.user.id,
       username: profile?.username || authUser?.email?.split('@')[0] || 'user',
       avatar:   authUser?.user_metadata?.avatar_url || null,
-      email:    authUser?.email
+      email:    authUser.email
     };
 
     await loadConversations();
+    await loadMyStreaks();
     subscribeConversations();
   });
 
@@ -77,6 +78,16 @@
     clearTimeout(tmdbTimer);
     clearTimeout(myTypingTimer);
   });
+
+  // ── STREAK COUNT (for 3-streak limit awareness) ──
+  async function loadMyStreaks() {
+    const { data } = await supabase
+      .from('streaks')
+      .select('id')
+      .or(`creator_id.eq.${me.id},partner_id.eq.${me.id}`)
+      .in('status', ['active', 'pending']);
+    myStreaksCount = (data || []).length;
+  }
 
   // ── TYPING ──
   function subscribeTyping(convId) {
@@ -187,7 +198,6 @@
     e.stopPropagation();
     if (deleteMenu?.id === msg.id) { deleteMenu = null; return; }
     deleteMenu = msg;
-    // Position the menu near click, kept inside viewport
     const x = Math.min(e.clientX, window.innerWidth - 200);
     const y = Math.min(e.clientY, window.innerHeight - 120);
     deleteMenuPos = { x, y };
@@ -201,7 +211,6 @@
     const prev = Array.isArray(msg.deleted_for) ? msg.deleted_for : [];
     const next = [...new Set([...prev, me.id])];
     await supabase.from('messages').update({ deleted_for: next }).eq('id', msgId);
-    // Remove from local list immediately
     messages = messages.filter(m => m.id !== msgId);
     closeDeleteMenu();
   }
@@ -239,7 +248,6 @@
     if (error) { console.error('Send failed:', error); sending = false; return; }
 
     if (newMsg) {
-      // Fetch with reply data
       const { data: full } = await supabase
         .from('messages')
         .select('*, reply_to_msg:reply_to(id, content, sender_id)')
@@ -357,10 +365,10 @@
         event: 'INSERT', schema: 'public', table: 'messages',
         filter: `conversation_id=eq.${activeConv.id}`
       }, async (payload) => {
-        if (messages.find(m => m.id === payload.new.id)) return;
+        // ── FIX: Skip our own messages — already added optimistically in sendMessage ──
+        if (payload.new.sender_id === me.id) return;
         if ((payload.new.deleted_for || []).includes(me.id)) return;
 
-        // Fetch with reply
         const { data: full } = await supabase
           .from('messages')
           .select('*, reply_to_msg:reply_to(id, content, sender_id)')
@@ -377,7 +385,6 @@
         event: 'UPDATE', schema: 'public', table: 'messages',
         filter: `conversation_id=eq.${activeConv.id}`
       }, (payload) => {
-        // If now deleted for me → remove
         if ((payload.new.deleted_for || []).includes(me.id)) {
           messages = messages.filter(m => m.id !== payload.new.id);
           return;
@@ -452,75 +459,6 @@
     return ['streak_accepted','streak_declined','streak_broken'].includes(msg.meta?.type);
   }
 
-  async function acceptStreak(msg) {
-    if (!msg.meta?.streak_id || processingReq === msg.id) return;
-    processingReq = msg.id;
-
-    const { data: streak } = await supabase.from('streaks').select('*').eq('id', msg.meta.streak_id).single();
-    if (!streak) { processingReq = null; return; }
-
-    const startStr = (() => { const d = new Date(); d.setDate(d.getDate()+1); return d.toISOString().split('T')[0]; })();
-    const endDate  = new Date(startStr); endDate.setDate(endDate.getDate() + streak.duration_days - 1);
-
-    await supabase.from('streaks').update({
-      partner_status: 'accepted', status: 'active',
-      start_date: startStr, end_date: endDate.toISOString().split('T')[0]
-    }).eq('id', streak.id);
-
-    // Generate movies for the acceptor
-    const GENRE_MAP = { 'Action':28,'Adventure':12,'Animation':16,'Comedy':35,'Crime':80,'Drama':18,
-      'Fantasy':14,'Horror':27,'Mystery':9648,'Romance':10749,'Sci-Fi':878,'Thriller':53,'War':10752,'Western':37 };
-    const genreIds  = (streak.genres||[]).map(g => GENRE_MAP[g]).filter(Boolean);
-    const BUSY_MAP  = { low:1, medium:2, free:3.5 };
-    const total     = Math.round((streak.duration_days / 7) * (BUSY_MAP[streak.busyness] || 2));
-
-    const movies = []; const seen = new Set();
-    for (let pg = 1; pg <= 5 && movies.length < total*2; pg++) {
-      try {
-        const res = await fetch(
-          `https://api.themoviedb.org/3/discover/movie?api_key=${TMDB_KEY}` +
-          `&with_genres=${genreIds.join(',')}&sort_by=popularity.desc&vote_count.gte=500&vote_average.gte=5.5&page=${pg}`
-        ).then(r=>r.json());
-        (res.results||[]).forEach(m=>{ if(!seen.has(m.id)&&m.poster_path){seen.add(m.id);movies.push(m);} });
-      } catch(_){}
-    }
-    const picked = movies.sort(()=>Math.random()-.5).slice(0,total);
-    const days   = Array.from({length:streak.duration_days},(_,i)=>i).sort(()=>Math.random()-.5).slice(0,picked.length).sort((a,b)=>a-b);
-    const rows   = picked.map((m,i)=>{
-      const d = new Date(startStr); d.setDate(d.getDate()+days[i]);
-      const ds = d.toISOString().split('T')[0];
-      return {
-        streak_id: streak.id, user_id: me.id, tmdb_id: m.id, title: m.title,
-        poster:   m.poster_path   ? `https://image.tmdb.org/t/p/w300${m.poster_path}`   : null,
-        backdrop: m.backdrop_path ? `https://image.tmdb.org/t/p/w780${m.backdrop_path}` : null,
-        year: (m.release_date||'').slice(0,4), rating: m.vote_average,
-        scheduled_date: ds, status: ds === startStr ? 'available' : 'locked',
-      };
-    });
-    await supabase.from('streak_movies').insert(rows);
-
-    await supabase.from('messages').insert({
-      conversation_id: activeConv.id, sender_id: me.id,
-      content: `✅ @${me.username} accepted the streak! 🔥 Starts tomorrow (${startStr})!`,
-      meta: { type: 'streak_accepted', streak_id: streak.id }
-    });
-
-    processingReq = null;
-    goto('/app/streak');
-  }
-
-  async function declineStreak(msg) {
-    if (!msg.meta?.streak_id || processingReq === msg.id) return;
-    processingReq = msg.id;
-    await supabase.from('streaks').update({ partner_status: 'declined' }).eq('id', msg.meta.streak_id);
-    await supabase.from('messages').insert({
-      conversation_id: activeConv.id, sender_id: me.id,
-      content: `❌ @${me.username} declined the streak request.`,
-      meta: { type: 'streak_declined', streak_id: msg.meta.streak_id }
-    });
-    processingReq = null;
-  }
-
   // ── GROUPED MESSAGES ──
   let grouped = $derived.by(() => {
     const out = []; let lastDay = '';
@@ -556,7 +494,7 @@
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
             <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
           </svg>
-          Create a Streak
+          Create a Streak {#if myStreaksCount > 0}<span class="streak-badge">{myStreaksCount}/3</span>{/if}
         </button>
 
         <div class="sb-me">
@@ -659,26 +597,25 @@
               <div class="day-sep"><span>{item.label}</span></div>
 
             {:else if isStreakReqForMe(item)}
-              <!-- ── STREAK REQUEST CARD ── -->
-              <div class="streak-req">
-                <div class="srq-flame">🔥</div>
-                <div class="srq-body">
-                  <div class="srq-title">Streak Invitation</div>
-                  <div class="srq-from">from @{item.user_name}</div>
-                  <div class="srq-pills">
-                    {#each (item.meta?.genres || []) as g}<span class="srq-pill">{g}</span>{/each}
-                    <span class="srq-pill">{item.meta?.duration} days</span>
+              <!-- ── NEW: STREAK INVITE PANEL CARD ── -->
+              <button class="streak-invite-card" onclick={() => goto('/app/streak')}>
+                <div class="sic-glow"></div>
+                <div class="sic-flame">🔥</div>
+                <div class="sic-body">
+                  <div class="sic-title">Streak Invitation</div>
+                  <div class="sic-from">@{item.user_name} wants to join a streak</div>
+                  <div class="sic-pills">
+                    {#each (item.meta?.genres || []) as g}<span class="sic-pill">{g}</span>{/each}
+                    <span class="sic-pill">{item.meta?.duration} days</span>
                   </div>
-                  <div class="srq-btns">
-                    <button class="srq-accept" disabled={processingReq === item.id}
-                      onclick={() => acceptStreak(item)}>
-                      {processingReq === item.id ? '…' : '✓ Accept'}
-                    </button>
-                    <button class="srq-decline" disabled={processingReq === item.id}
-                      onclick={() => declineStreak(item)}>✕ Decline</button>
+                  <div class="sic-action">
+                    <span>Tap to view</span>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M5 12h14M12 5l7 7-7 7"/>
+                    </svg>
                   </div>
                 </div>
-              </div>
+              </button>
 
             {:else if isStreakInfo(item)}
               <!-- ── STREAK INFO BANNER ── -->
@@ -1000,6 +937,10 @@
     margin-bottom:12px;position:relative;overflow:hidden
   }
   .streak-btn:hover{border-color:#c9a84c;transform:translateY(-1px);box-shadow:0 4px 16px rgba(201,168,76,.2)}
+  .streak-badge{
+    margin-left:auto;background:rgba(201,168,76,.2);border:1px solid rgba(201,168,76,.4);
+    color:#c9a84c;font-size:.5rem;padding:2px 6px;border-radius:10px
+  }
 
   .sb-me{display:flex;align-items:center;gap:10px;margin-bottom:12px}
   .av-img{width:40px;height:40px;border-radius:50%;object-fit:cover;border:2px solid rgba(201,168,76,.3);flex-shrink:0}
@@ -1051,22 +992,38 @@
   .day-sep::before{content:'';position:absolute;top:50%;left:0;right:0;height:1px;background:rgba(255,255,255,.05)}
   .day-sep span{background:#050505;position:relative;padding:0 10px}
 
-  /* STREAK REQUEST CARD */
-  .streak-req{display:flex;align-items:flex-start;gap:14px;background:linear-gradient(135deg,rgba(201,168,76,.1),rgba(201,168,76,.04));border:1px solid rgba(201,168,76,.35);border-radius:16px;padding:16px 18px;margin:4px 0;position:relative;overflow:hidden}
-  .streak-req::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,#c9a84c,transparent)}
-  .srq-flame{font-size:2rem;line-height:1;flex-shrink:0}
-  .srq-body{flex:1}
-  .srq-title{font-family:'Cormorant Garamond',serif;font-size:1.2rem;font-weight:700;color:#c9a84c;margin-bottom:2px}
-  .srq-from{font-family:'Space Mono',monospace;font-size:.53rem;color:rgba(240,236,228,.4);margin-bottom:8px}
-  .srq-pills{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:12px}
-  .srq-pill{background:rgba(201,168,76,.12);border:1px solid rgba(201,168,76,.25);color:#c9a84c;font-family:'Space Mono',monospace;font-size:.5rem;letter-spacing:.06em;padding:3px 9px;border-radius:20px}
-  .srq-btns{display:flex;gap:8px}
-  .srq-accept{background:#c9a84c;color:#050505;font-family:'Space Mono',monospace;font-size:.6rem;letter-spacing:.08em;font-weight:700;padding:7px 16px;border:none;cursor:pointer;border-radius:20px;transition:.2s}
-  .srq-accept:hover{background:#e8c46a}
-  .srq-accept:disabled{opacity:.5;cursor:not-allowed}
-  .srq-decline{background:rgba(231,76,60,.1);border:1px solid rgba(231,76,60,.3);color:#e74c3c;font-family:'Space Mono',monospace;font-size:.6rem;letter-spacing:.08em;padding:7px 16px;cursor:pointer;border-radius:20px;transition:.2s}
-  .srq-decline:hover{background:rgba(231,76,60,.2)}
-  .srq-decline:disabled{opacity:.5;cursor:not-allowed}
+  /* ── NEW: STREAK INVITE PANEL CARD ── */
+  .streak-invite-card{
+    position:relative;display:flex;align-items:center;gap:16px;
+    background:linear-gradient(135deg,rgba(201,168,76,.12),rgba(201,168,76,.04));
+    border:1px solid rgba(201,168,76,.4);border-radius:18px;
+    padding:18px 22px;margin:6px 0;cursor:pointer;transition:all .25s;
+    overflow:hidden;width:100%;text-align:left
+  }
+  .streak-invite-card:hover{
+    transform:translateY(-2px);border-color:#c9a84c;
+    box-shadow:0 8px 32px rgba(201,168,76,.18)
+  }
+  .streak-invite-card:active{transform:translateY(0)}
+  .sic-glow{
+    position:absolute;top:-50%;left:-20%;width:60%;height:200%;
+    background:radial-gradient(circle,rgba(201,168,76,.12),transparent 70%);
+    pointer-events:none
+  }
+  .sic-flame{font-size:2.2rem;line-height:1;flex-shrink:0;position:relative;z-index:1}
+  .sic-body{flex:1;position:relative;z-index:1}
+  .sic-title{font-family:'Cormorant Garamond',serif;font-size:1.25rem;font-weight:700;color:#c9a84c;margin-bottom:3px}
+  .sic-from{font-family:'Space Mono',monospace;font-size:.55rem;color:rgba(240,236,228,.45);margin-bottom:10px}
+  .sic-pills{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+  .sic-pill{background:rgba(201,168,76,.12);border:1px solid rgba(201,168,76,.25);color:#c9a84c;font-family:'Space Mono',monospace;font-size:.5rem;letter-spacing:.06em;padding:4px 10px;border-radius:20px}
+  .sic-action{
+    display:inline-flex;align-items:center;gap:8px;
+    color:#c9a84c;font-family:'Space Mono',monospace;font-size:.58rem;letter-spacing:.1em;
+    opacity:.8;transition:opacity .2s
+  }
+  .streak-invite-card:hover .sic-action{opacity:1}
+  .sic-action svg{transition:transform .2s}
+  .streak-invite-card:hover .sic-action svg{transform:translateX(4px)}
 
   /* STREAK INFO */
   .streak-info{display:flex;align-items:center;gap:10px;padding:10px 14px;border-radius:10px;margin:3px 0;font-size:.8rem;justify-content:space-between;flex-wrap:wrap}
@@ -1254,5 +1211,6 @@
     .modal-content{flex-direction:column;align-items:center;text-align:center}
     .modal-info{align-items:center}
     .reply-btn-hover{display:none}
+    .streak-invite-card{padding:14px 16px}
   }
 </style>
